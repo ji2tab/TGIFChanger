@@ -10,8 +10,8 @@
 
 | 版 | 内容 |
 |---|---|
-| 1.0 (初版) | オリジナル版仕様書 (sysfs / TG1固定 / Restart=always) |
-| proto-1.0.0 | プロト版として全面改訂。共通設定ファイル導入、libgpiod対応、ログファイル日付追従、PID追跡改善、WATCH_TG設定可変化等。 |
+| 1.0 (初版) | オリジナル版仕様書 (sysfs / TG1固定 / Restart=always / `/home/pi-star/scripts`) |
+| proto-1.0.0 | プロト版として全面改訂。共通設定ファイル導入、libgpiod対応、ログファイル日付追従、PID追跡改善、WATCH_TG設定可変化、配置先 `/opt/tgifchanger/` 等。 |
 
 ---
 
@@ -49,7 +49,7 @@
 |         |                tail -F|     |                       |control|
 |         |                       v     v                       |       |
 |   +- - -|- - - - - - - - - - - - - - - - - - - - - - - - - - -|- - +  |
-|   |  TGIFChanger Suite                                        |    |  |
+|   |  TGIFChanger Suite (/opt/tgifchanger/)                    |    |  |
 |   |                                                           |    |  |
 |   |   +-----------------+      +---------------+              |    |  |
 |   |   | log_monitor     |      | tg_change     |--HTTP GET----+    |  |
@@ -68,6 +68,11 @@
 |   | /etc/            |---reads--> [log_monitor / auto_tg_restore /     |
 |   | tgifchanger.conf |             tg_change ]                         |
 |   +------------------+                                                 |
+|                                                                        |
+|   +-------------------+                                                |
+|   | /usr/local/bin/   |---symlink--> /opt/tgifchanger/tg_change        |
+|   | tg_change         |                                                |
+|   +-------------------+                                                |
 |                                                                        |
 |   +-------------------+                                                |
 |   | GPIO17 (Pin 11)   |==== Signal Wire (3.3V) ===+                    |
@@ -114,7 +119,20 @@
 | `tg_change` | TGIF API を呼び出してTGを即時変更 (CLI) | オンデマンド実行 |
 | `/etc/tgifchanger.conf` | 3スクリプト共通の設定ファイル | テキストファイル |
 
-### 1.3 データフロー
+### 1.3 ファイル配置 (FHS 準拠)
+
+proto-1.0.0 では FHS (Filesystem Hierarchy Standard) に基づき、以下の配置を採用する。
+
+| パス | 役割 |
+|---|---|
+| `/opt/tgifchanger/` | 実行ファイル本体 (自己完結型サードパーティパッケージとして配置) |
+| `/etc/tgifchanger.conf` | 設定ファイル |
+| `/usr/local/bin/tg_change` | `tg_change` への symlink (PATH 上から直接実行可能にするため) |
+| `/etc/systemd/system/*.service` | systemd ユニット定義 |
+
+> オリジナル版では `/home/pi-star/scripts/` に配置していたが、Pi-Star 本体スクリプト群との混在を避けるため、proto-1.0.0 では `/opt/tgifchanger/` (1製品1ディレクトリ) に変更した。アンインストール時は `sudo rm -rf /opt/tgifchanger` で完結する。
+
+### 1.4 データフロー
 
 - RF 経由で受信した DMR 信号は MMDVMHost によりログとして記録される (`/var/log/pi-star/MMDVM-YYYY-MM-DD.log`)。
 - `log_monitor` および `auto_tg_restore` は当該ログを `tail -F` でリアルタイム追跡し、特定文字列パターンをイベントとして検出する。
@@ -122,13 +140,14 @@
 - `auto_tg_restore` はイベント検出時にタイマーを開始し、所定時間経過後に `tg_change` を起動して TGIF API へリクエストを送出する。
 - `tg_change` は手動 CLI 実行も可能であり、運用者の即時操作にも対応する。
 
-### 1.4 設計原則
+### 1.5 設計原則
 
 - **軽量性**: 追加デーモン不要。Bash + 標準UNIXユーティリティで完結。
 - **耐障害性**: systemd の `Restart=on-failure` による自動復旧、`flock` による多重起動防止。
 - **可搬性**: Pi-Star (32-bit Bullseye) と WPSD (64-bit) の両環境で動作。
 - **可観測性**: 全ログを `journalctl` で参照可能。
 - **設定外出し**: 動作パラメータは `/etc/tgifchanger.conf` に集約し、コード変更なしで運用調整可能。
+- **FHS 準拠**: 配置先を OS 標準のディレクトリ階層規約に従う。
 
 ---
 
@@ -202,7 +221,7 @@ done
 
 ### 2.3 tg_change (APIブリッジ)
 
-TGIF Network の HTTP API を呼び出してトークグループ切替を行う CLI ツール。
+TGIF Network の HTTP API を呼び出してトークグループ切替を行う CLI ツール。`/usr/local/bin/tg_change` シンボリックリンク経由で PATH 上から直接実行可能。
 
 #### 2.3.1 DMR ID 自動取得
 
@@ -321,7 +340,7 @@ sudo systemctl restart log_monitor auto_tg_restore
 
 ### 5.3 多重起動防止 (proto-1.0.0 新規)
 
-`auto_tg_restore` は `flock` を用いた排他制御を実装する。これにより手動起動と systemd 経由起動の競合や、re-installation 時の二重起動を防止する。
+`auto_tg_restore` は `flock` を用いた排他制御を実装する。これにより手動起動と systemd 経由起動の競合や、再インストール時の二重起動を防止する。
 
 ```bash
 exec 9>"$LOCK_FILE"
@@ -348,9 +367,17 @@ systemctl status auto_tg_restore
 
 ### 6.3 手動 TG 切替
 
+シンボリックリンクが作成されているため、PATH 上から直接実行可能:
+
 ```bash
-/home/pi-star/scripts/tg_change -44011        # スロット1 を TG44011 に
-/home/pi-star/scripts/tg_change -168:2        # スロット2 を TG168 に
+tg_change -44011        # スロット1 を TG44011 に
+tg_change -168:2        # スロット2 を TG168 に
+```
+
+直接パス指定も可:
+
+```bash
+/opt/tgifchanger/tg_change -44011
 ```
 
 ### 6.4 GPIO 状態確認
@@ -375,6 +402,7 @@ cat /sys/class/gpio/gpio17/value
 | TG が復帰しない | (1) `journalctl -u auto_tg_restore` でタイマー起動確認 / (2) `tg_change` を手動実行して API 疎通確認 / (3) DMR ID 取得確認 |
 | DMR ID 取得失敗 | `/etc/dmrgateway` の `[DMR Network 4]` セクションに `Id=` 行があるか確認 |
 | 二重起動エラー | `/run/auto_tg_restore.lock` を確認。古いロックは `sudo rm /run/auto_tg_restore.lock` で削除可 |
+| `tg_change: command not found` | `/usr/local/bin/tg_change` symlink の有無を `ls -l` で確認。無ければ `sudo ln -sf /opt/tgifchanger/tg_change /usr/local/bin/tg_change` |
 
 ---
 
@@ -397,6 +425,8 @@ cat /sys/class/gpio/gpio17/value
 | 項目 | オリジナル版 | proto-1.0.0 |
 |---|---|---|
 | 設定管理 | 各スクリプト先頭にハードコード | `/etc/tgifchanger.conf` に集約 |
+| 配置先 | `/home/pi-star/scripts/` | `/opt/tgifchanger/` (FHS 準拠) |
+| CLI 起動 | フルパス指定が必要 | `/usr/local/bin/tg_change` symlink で PATH 上から実行可 |
 | GPIO 制御 | sysfs 直書きのみ | libgpiod 優先 / sysfs フォールバック |
 | `WATCH_TG` | TG1 ハードコード | 設定ファイルで可変 |
 | PID 追跡 | `tail \| while read` (サブシェル化) | プロセス置換 `< <(...)` で親シェル保持 |
@@ -409,7 +439,27 @@ cat /sys/class/gpio/gpio17/value
 
 ---
 
-## 付録B. 著作・ライセンス
+## 付録B. アンインストール手順
+
+```bash
+# サービス停止・無効化
+sudo systemctl stop    log_monitor auto_tg_restore
+sudo systemctl disable log_monitor auto_tg_restore
+
+# unit ファイル削除
+sudo rm /etc/systemd/system/log_monitor.service
+sudo rm /etc/systemd/system/auto_tg_restore.service
+sudo systemctl daemon-reload
+
+# 本体・symlink・設定ファイル削除
+sudo rm -rf /opt/tgifchanger
+sudo rm -f  /usr/local/bin/tg_change
+sudo rm -f  /etc/tgifchanger.conf /etc/tgifchanger.conf.dist
+```
+
+---
+
+## 付録C. 著作・ライセンス
 
 **ライセンス:** GPL v3 (OpenCCVoice プロジェクトの理念に基づき、オープンソースとして公開する)
 
