@@ -370,14 +370,14 @@ systemctl status auto_tg_restore
 シンボリックリンクが作成されているため、PATH 上から直接実行可能:
 
 ```bash
-tg_change -44011        # スロット1 を TG44011 に
+tg_change -168          # スロット1 を TG168 (ホームTG) に
 tg_change -168:2        # スロット2 を TG168 に
 ```
 
 直接パス指定も可:
 
 ```bash
-/opt/tgifchanger/tg_change -44011
+/opt/tgifchanger/tg_change -168
 ```
 
 ### 6.4 GPIO 状態確認

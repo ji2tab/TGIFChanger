@@ -11,7 +11,7 @@
 #   tg_change -h | --help
 #
 # Example:
-#   tg_change -44011        # スロット1 を TG44011 に変更
+#   tg_change -168          # スロット1 を TG168 (ホームTG) に変更
 #   tg_change -168:2        # スロット2 を TG168 に変更
 # =============================================================================
 
@@ -60,7 +60,7 @@ $SCRIPT_NAME (TGIFChanger ${VERSION})
   $SCRIPT_NAME -h | --help         このヘルプを表示
 
 例:
-  $SCRIPT_NAME -44011    # スロット1 を TG44011 に
+  $SCRIPT_NAME -168      # スロット1 を TG168 (ホームTG) に
   $SCRIPT_NAME -168:2    # スロット2 を TG168 に
 
 設定ファイル: $CONF_FILE
