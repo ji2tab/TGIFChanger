@@ -1,13 +1,19 @@
 #!/bin/bash
 # =============================================================================
-# log_monitor - MMDVM to GPIO Bridge (Version 1.2.4)
+# log_monitor - MMDVM to GPIO Bridge
 # -----------------------------------------------------------------------------
-# 変更内容:
-#   - /etc/mmdvmhost から Callsign=JJ2ZAR を自動取得
-#   - 自局の送信ログを検知した場合は GPIO 出力を抑制（無限ループ防止）
+# MMDVMHost ログをリアルタイム監視し、指定 TG の受信状態を
+# Raspberry Pi の GPIO 出力ピンに反映するブリッジ。
+#
+# 設計上のポイント:
+#   - libgpiod v2 書式 (gpioset -c CHIP PIN=VAL) に対応
+#   - libgpiod が無ければ sysfs にフォールバック
+#   - ログファイルの日付切り替わりを検出して tail を再起動
+#   - WATCH_TG / GPIO_PIN を /etc/tgifchanger.conf で設定可能
+#   - 自局コールサインを /etc/mmdvmhost から自動取得し、自送信を無視
 # =============================================================================
 
-VERSION="proto-1.0.2"
+VERSION="proto-1.0.3"
 CONF_FILE="/etc/tgifchanger.conf"
 MMDVM_CONF="/etc/mmdvmhost"
 
@@ -29,8 +35,10 @@ log() {
 get_my_callsign() {
     local call=""
     if [ -f "$MMDVM_CONF" ]; then
-        # mmdvmhost の [General] セクションから Callsign を抽出
-        call=$(grep -m 1 "^Callsign=" "$MMDVM_CONF" | awk -F= '{print $2}' | tr -d '\r ' | tr '[:lower:]' '[:upper:]')
+        call=$(grep -m 1 "^Callsign=" "$MMDVM_CONF" \
+               | awk -F= '{print $2}' \
+               | tr -d '\r ' \
+               | tr '[:lower:]' '[:upper:]')
     fi
     echo "$call"
 }
@@ -42,84 +50,202 @@ else
     log "🆔 自局コールサインを検出: $MY_CALL (この局の送信は無視します)"
 fi
 
-# --- GPIO バックエンド検出 & 初期化 -----------------------------------------
+# --- GPIO バックエンド検出 --------------------------------------------------
 detect_gpio_backend() {
-    if [ "$GPIO_BACKEND" = "sysfs" ]; then GPIO_MODE="sysfs"; return; fi
-    command -v gpioset >/dev/null 2>&1 && GPIO_MODE="libgpiod" || GPIO_MODE="sysfs"
+    case "$GPIO_BACKEND" in
+        libgpiod)
+            if ! command -v gpioset >/dev/null 2>&1; then
+                log "❌ libgpiod が指定されていますが gpioset が見つかりません。"
+                log "   sudo apt-get install gpiod を実行してください。"
+                exit 1
+            fi
+            GPIO_MODE="libgpiod"
+            ;;
+        sysfs)
+            GPIO_MODE="sysfs"
+            ;;
+        auto|"")
+            if command -v gpioset >/dev/null 2>&1; then
+                GPIO_MODE="libgpiod"
+            else
+                GPIO_MODE="sysfs"
+            fi
+            ;;
+        *)
+            log "❌ 不明な GPIO_BACKEND: $GPIO_BACKEND"
+            exit 1
+            ;;
+    esac
 }
 
-init_gpio() {
-    if [ "$GPIO_MODE" = "sysfs" ]; then
-        [ ! -d "/sys/class/gpio/gpio${GPIO_PIN}" ] && echo "${GPIO_PIN}" > /sys/class/gpio/export 2>/dev/null
-        sleep 0.1
-        echo out > "/sys/class/gpio/gpio${GPIO_PIN}/direction" 2>/dev/null
-        echo 0   > "/sys/class/gpio/gpio${GPIO_PIN}/value"     2>/dev/null
+# --- libgpiod chip 自動検出 -------------------------------------------------
+detect_gpio_chip() {
+    [ "$GPIO_CHIP" != "auto" ] && return
+
+    if command -v gpiodetect >/dev/null 2>&1; then
+        # ラベルに pinctrl または bcm を含むチップを優先
+        local chip
+        chip=$(gpiodetect 2>/dev/null \
+               | grep -E 'pinctrl|bcm' \
+               | head -1 \
+               | awk '{print $1}')
+        GPIO_CHIP="${chip:-gpiochip0}"
+    else
+        GPIO_CHIP="gpiochip0"
+    fi
+}
+
+# --- libgpiod バージョン検出 ------------------------------------------------
+# v1: gpioset CHIP PIN=VAL
+# v2: gpioset -c CHIP PIN=VAL
+detect_libgpiod_version() {
+    local ver
+    ver=$(gpioset --version 2>&1 | grep -oE 'v[0-9]+' | head -1)
+    LIBGPIOD_MAJOR="${ver#v}"
+    LIBGPIOD_MAJOR="${LIBGPIOD_MAJOR%%.*}"
+    # バージョン取得失敗時は v2 として扱う（新環境優先）
+    [ -z "$LIBGPIOD_MAJOR" ] && LIBGPIOD_MAJOR=2
+}
+
+# --- GPIO 制御 --------------------------------------------------------------
+GPIO_STATE=-1   # 直前出力値 (連続呼び出し抑止)
+
+init_gpio_sysfs() {
+    if [ ! -d "/sys/class/gpio/gpio${GPIO_PIN}" ]; then
+        echo "${GPIO_PIN}" > /sys/class/gpio/export 2>/dev/null
+    fi
+    sleep 0.1
+    echo out > "/sys/class/gpio/gpio${GPIO_PIN}/direction" 2>/dev/null
+    echo 0   > "/sys/class/gpio/gpio${GPIO_PIN}/value"     2>/dev/null
+}
+
+set_gpio_libgpiod() {
+    if [ "${LIBGPIOD_MAJOR}" -ge 2 ]; then
+        # libgpiod v2 書式
+        gpioset -c "$GPIO_CHIP" "${GPIO_PIN}=$1" 2>/dev/null
+    else
+        # libgpiod v1 書式
+        gpioset "$GPIO_CHIP" "${GPIO_PIN}=$1" 2>/dev/null
     fi
 }
 
 set_gpio() {
     local val=$1
-    if [ "$GPIO_MODE" = "libgpiod" ]; then
-        gpioset 0 "${GPIO_PIN}=${val}" 2>/dev/null
-    else
-        echo "$val" > "/sys/class/gpio/gpio${GPIO_PIN}/value" 2>/dev/null
+    [ "$val" = "$GPIO_STATE" ] && return
+    case "$GPIO_MODE" in
+        sysfs)
+            echo "$val" > "/sys/class/gpio/gpio${GPIO_PIN}/value" 2>/dev/null
+            ;;
+        libgpiod)
+            set_gpio_libgpiod "$val"
+            ;;
+    esac
+    GPIO_STATE=$val
+}
+
+cleanup_gpio() {
+    set_gpio 0
+    if [ "$GPIO_MODE" = "sysfs" ]; then
+        echo "${GPIO_PIN}" > /sys/class/gpio/unexport 2>/dev/null
     fi
 }
 
 cleanup() {
-    log "⚠️  停止シグナルを受信。GPIOをリセットします。"
-    set_gpio 0
-    [ "$GPIO_MODE" = "sysfs" ] && echo "${GPIO_PIN}" > /sys/class/gpio/unexport 2>/dev/null
+    log "⚠️  停止シグナルを受信しました。GPIO をクリーンアップします..."
+    cleanup_gpio
     exit 0
 }
 
 trap cleanup SIGINT SIGTERM
-detect_gpio_backend && init_gpio
+
+# --- 起動チェック -----------------------------------------------------------
+if [ ! -d "$LOG_DIR" ]; then
+    log "❌ エラー: ログディレクトリが見つかりません: $LOG_DIR"
+    exit 1
+fi
+
+detect_gpio_backend
+if [ "$GPIO_MODE" = "libgpiod" ]; then
+    detect_gpio_chip
+    detect_libgpiod_version
+    init_gpio() { :; }
+    log "🚀 log_monitor (${VERSION}) Active"
+    log "   WATCH_SLOT=${WATCH_SLOT}  WATCH_TG=${WATCH_TG}"
+    log "   GPIO=${GPIO_PIN}  BACKEND=libgpiod v${LIBGPIOD_MAJOR}  CHIP=${GPIO_CHIP}"
+else
+    init_gpio_sysfs
+    log "🚀 log_monitor (${VERSION}) Active"
+    log "   WATCH_SLOT=${WATCH_SLOT}  WATCH_TG=${WATCH_TG}"
+    log "   GPIO=${GPIO_PIN}  BACKEND=sysfs"
+fi
 
 # --- ログ追従ループ ---------------------------------------------------------
-get_latest_log() { ls -t "${LOG_DIR}"/MMDVM-*.log 2>/dev/null | head -1; }
+get_latest_log() {
+    ls -t "${LOG_DIR}"/MMDVM-*.log 2>/dev/null | head -1
+}
 
-current_file=$(get_latest_log)
-exec 3< <(tail -n 0 -F "$current_file" 2>/dev/null)
+current_file=""
+tail_pid=""
 
-log "🚀 log_monitor (${VERSION}) 監視開始: $(basename "$current_file")"
+start_tail() {
+    local f=$1
+    if [ -n "$tail_pid" ] && kill -0 "$tail_pid" 2>/dev/null; then
+        kill "$tail_pid" 2>/dev/null
+        wait "$tail_pid" 2>/dev/null
+    fi
+    log "📖 ログ監視開始: $(basename "$f")"
+    exec 3< <(tail -n 0 -F "$f" 2>/dev/null)
+    tail_pid=$!
+}
+
+# 初回ログファイル取得
+while :; do
+    current_file=$(get_latest_log)
+    [ -n "$current_file" ] && break
+    log "ログファイル待機中... (${LOG_DIR}/MMDVM-*.log)"
+    sleep 5
+done
+
+start_tail "$current_file"
 
 while :; do
     if read -r -t 5 line <&3; then
-        # スロット判定
+        # スロットフィルタ
         echo "$line" | grep -q "Slot ${WATCH_SLOT}," || continue
 
-        # --- 受信開始判定 ---
+        # 受信開始
         if echo "$line" | grep -q "received.*voice header"; then
-            from_call=$(echo "$line" | sed -E 's/.*from ([^ ]+) .*/\1/' | tr '[:lower:]' '[:upper:]')
-            
-            # 自局（JJ2ZAR）なら無視してループ防止
-            if [ "$from_call" = "$MY_CALL" ]; then
+            from_call=$(echo "$line" \
+                        | sed -E 's/.*from ([^ ]+) .*/\1/' \
+                        | tr '[:lower:]' '[:upper:]')
+            # 自局送信は無視
+            if [ -n "$MY_CALL" ] && [ "$from_call" = "$MY_CALL" ]; then
                 log "[  SKIPPING  ] Self-transmission ($from_call) - Loop prevented."
                 continue
             fi
-
             tg=$(echo "$line" | sed -E 's/.*to TG ([0-9]+).*/\1/')
             if [ "$tg" = "$WATCH_TG" ]; then
                 set_gpio 1
-                log "[ RECEIVING ] TG${tg} | From: ${from_call} | GPIO: HIGH"
+                log "[ RECEIVING ] TG${tg} | From: ${from_call} | GPIO${GPIO_PIN}: HIGH"
             fi
-        # --- 受信終了判定 ---
+
+        # 受信終了
         elif echo "$line" | grep -q "end of voice transmission"; then
             tg=$(echo "$line" | sed -E 's/.*to TG ([0-9]+).*/\1/')
             if [ "$tg" = "$WATCH_TG" ]; then
                 set_gpio 0
-                log "[   IDLE    ] TG${tg} | GPIO: LOW"
+                log "[   IDLE    ] TG${tg} | GPIO${GPIO_PIN}: LOW"
             fi
         fi
+
     else
-        # ログファイルの日付切替チェック
+        # ログファイル切替チェック
         latest=$(get_latest_log)
         if [ -n "$latest" ] && [ "$latest" != "$current_file" ]; then
-            log "📅 ログ切替: $latest"
+            log "📅 ログ切替: $(basename "$latest")"
             current_file="$latest"
             set_gpio 0
-            exec 3< <(tail -n 0 -F "$current_file" 2>/dev/null)
+            start_tail "$current_file"
         fi
     fi
 done
