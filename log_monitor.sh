@@ -2,16 +2,10 @@
 # =============================================================================
 # log_monitor.sh - MMDVM to GPIO Bridge (Optimized for WPSD/Pi-Star)
 # -----------------------------------------------------------------------------
-# MMDVMHost ログをリアルタイム監視し、指定 TG の受信状態を
-# Raspberry Pi の GPIO 出力ピンに反映するブリッジ。
-#
-# 特徴:
-#   - libgpiod v1 / v2 を自動判別し、最適なコマンドを選択
-#   - フィーチャー検知 (--mode wait) により OS 世代を問わず動作
-#   - 自局コールサインの自動同期によるループ防止
+# VERSION: proto-1.1.3
 # =============================================================================
 
-VERSION="proto-1.1.0"
+VERSION="proto-1.1.3"
 CONF_FILE="/etc/tgifchanger.conf"
 MMDVM_CONF="/etc/mmdvmhost"
 
@@ -57,14 +51,13 @@ detect_gpio_backend() {
 detect_libgpiod_features() {
     [ "$GPIO_MODE" != "libgpiod" ] && return
     
-    # チップ検出
-    if [ "$GPIO_CHIP" = "auto" ]; then
+    # チップ検出 (v1の場合、チップ名の指定は必須に近い)
+    if [ "$GPIO_CHIP" = "auto" ] || [ -z "$GPIO_CHIP" ]; then
         local chip
         chip=$(gpiodetect 2>/dev/null | grep -E 'pinctrl|bcm' | head -1 | awk '{print $1}')
-        GPIO_CHIP="${chip:-gpiochip0}"
+        GPIO_CHIP="${chip:-0}" # 名前が取れなければ番号の0を代入
     fi
 
-    # フィーチャー検知: wait オプションがあるか
     if gpioset --help 2>&1 | grep -q "wait"; then
         LIBGPIOD_VERSION=2
     else
@@ -80,7 +73,6 @@ set_gpio() {
     local val=$1
     [ "$val" = "$GPIO_STATE" ] && return
 
-    # 既存の保持プロセスがあれば停止 (v1/v2共通)
     if [ -n "$GPIOSET_PID" ] && kill -0 "$GPIOSET_PID" 2>/dev/null; then
         kill "$GPIOSET_PID" 2>/dev/null
         wait "$GPIOSET_PID" 2>/dev/null
@@ -94,20 +86,20 @@ set_gpio() {
         libgpiod)
             if [ "$val" = "1" ]; then
                 if [ "$LIBGPIOD_VERSION" -eq 2 ]; then
-                    # v2 (Modern): --mode wait でプロセスを維持
                     gpioset -c "$GPIO_CHIP" "${GPIO_PIN}=1" --mode wait &
                 else
-                    # v1 (Legacy): バックグラウンド実行で維持
+                    # v1: チップ名(または番号)を第1引数、ピン設定を第2引数にする
                     gpioset "$GPIO_CHIP" "${GPIO_PIN}=1" &
                 fi
                 GPIOSET_PID=$!
+                log "⚡ GPIO${GPIO_PIN} -> HIGH (PID: $GPIOSET_PID)"
             else
-                # LOW 設定
                 if [ "$LIBGPIOD_VERSION" -eq 2 ]; then
                     gpioset -c "$GPIO_CHIP" "${GPIO_PIN}=0" 2>/dev/null
                 else
                     gpioset "$GPIO_CHIP" "${GPIO_PIN}=0" 2>/dev/null
                 fi
+                log "🌑 GPIO${GPIO_PIN} -> LOW"
             fi
             ;;
     esac
@@ -118,7 +110,6 @@ cleanup() {
     log "⚠️  停止シグナル受信。GPIO をリセットします。"
     [ -n "$GPIOSET_PID" ] && kill "$GPIOSET_PID" 2>/dev/null
     set_gpio 0
-    [ "$GPIO_MODE" = "sysfs" ] && echo "${GPIO_PIN}" > /sys/class/gpio/unexport 2>/dev/null
     exit 0
 }
 
@@ -163,15 +154,10 @@ start_tail "$current_file"
 
 while :; do
     if read -r -t 5 line <&3; then
-        # ターゲットスロットの判定
         echo "$line" | grep -q "Slot ${WATCH_SLOT}," || continue
 
-        # 受信開始判定
         if echo "$line" | grep -q "voice header"; then
-            # コールサイン抽出 (WPSD/Pi-Star 両対応)
             from_call=$(echo "$line" | grep -oP 'from \K[^ ]+' | tr '[:lower:]' '[:upper:]')
-            
-            # 自局スキップ
             [ -n "$MY_CALL" ] && [ "$from_call" = "$MY_CALL" ] \
                 && { log "[  SKIP  ] Self ($from_call)"; continue; }
 
@@ -181,7 +167,6 @@ while :; do
                 log "[ RECEIVING ] TG${tg} | From: ${from_call} | GPIO${GPIO_PIN}: HIGH"
             fi
 
-        # 受信終了判定
         elif echo "$line" | grep -q "end of voice transmission"; then
             tg=$(echo "$line" | grep -oP 'to TG \K[0-9]+')
             if [ "$tg" = "$WATCH_TG" ]; then
@@ -190,7 +175,6 @@ while :; do
             fi
         fi
     else
-        # ログ切替チェック
         latest=$(get_latest_log)
         if [ -n "$latest" ] && [ "$latest" != "$current_file" ]; then
             log "📅 ログ切替: $(basename "$latest")"
