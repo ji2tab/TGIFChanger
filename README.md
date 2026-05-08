@@ -8,12 +8,15 @@ MMDVM(WPSD/Pi-Star)環境において、TGIFネットワークの運用を自動
 ## 🌟 主な機能
 
 ### 1. TGIF Changer (`tg_change`)
+
 DMRGatewayの設定からIDを自動取得し、コマンドラインからTGIFのトークグループを瞬時に切り替えます。
 
 ### 2. Auto TG Restore (`auto_tg_restore`)
+
 通信終了から120秒後、自動的に指定のホームTG（デフォルト：TG168）へ復帰。戻し忘れを防止します。
 
 ### 3. GPIO Bridge (`log_monitor`)
+
 TG1の受信ステータスをリアルタイム監視。受信中はRaspberry PiのGPIO17をHIGH出力し、外部機器へステータスを伝達します。
 
 ---
@@ -31,7 +34,7 @@ GPIO出力は物理的な信号として、OpenCCVoice（Arduino Nano等）のD1
 Raspberry PiとArduinoを以下の通り接続してください。
 
 | Raspberry Pi (物理ピン) | Arduino Nano (ピン) | 役割 |
-|---|---|---|
+|:---:|:---:|:---:|
 | **Pin 11 (GPIO17)** | **D11** | TG1受信信号 (High: 受信中 / Low: 待機) |
 | **Pin 9 (GND)** | **GND** | 共通接地 (Common Ground) |
 
@@ -51,8 +54,8 @@ curl -L https://raw.githubusercontent.com/ji2tab/TGIFChanger/main/install.sh | b
 
 このスクリプトを実行すると、以下の処理が自動で行われます。
 
-1. `/home/pi-star/scripts/` へのファイル配置  
-2. 実行権限の付与  
+1. `/home/pi-star/scripts/` へのファイル配置
+2. 実行権限の付与
 3. Systemdへのサービス登録（OS起動時の自動バックグラウンド実行開始）
 
 ---
@@ -111,21 +114,17 @@ TGIFのトークグループを即時変更します。
 
 最後の通信終了から120秒経過すると、自動的にホームTGへ戻します。
 
-デフォルト設定：
-
-- Home TG: `168`
-- 待機時間: `120秒`
+- **Default Home TG**: `168`
+- **Wait Time**: `120秒`
 
 ### log_monitor
 
 MMDVMHostログを監視し、TG1受信中にGPIO17をHigh出力します。
 
-出力状態：
-
-| 状態 | GPIO17 |
-|---|---|
-| TG1受信中 | HIGH |
-| 待機中 | LOW |
+| 状態 | GPIO17出力 |
+| --- | --- |
+| TG1受信中 | **HIGH** |
+| 待機中 | **LOW** |
 
 ---
 
@@ -133,24 +132,19 @@ MMDVMHostログを監視し、TG1受信中にGPIO17をHigh出力します。
 
 本システムは、OpenCCVoice側のTM BUSY入力を利用し、TG1受信状態に応じた音声ガイダンス制御を行うために設計されています。
 
-例えば：
-
 - TG1受信中はCW送出禁止
 - ガイダンス再生抑止
 - 通信中アナウンス制御
 
-などの連携が可能です。
+などの高度な連携が可能です。
 
 ---
 
 ## 🖥 対応環境
 
-- Raspberry Pi Zero 2 W
-- Raspberry Pi 3 / 4 / 5
-- Pi-Star
-- WPSD
-- MMDVMHost
-- DMRGateway
+- Raspberry Pi シリーズ (Zero 2 W / 3 / 4 / 5)
+- Pi-Star / WPSD
+- MMDVMHost / DMRGateway
 
 ---
 
@@ -164,7 +158,7 @@ GPL v3
 
 ## 👤 作者
 
-### Kazuhiko Shinoda (JI2TAB)
+### 篠田 一彦 / Kazuhiko Shinoda (JI2TAB)
 
 - Owariasahi City, Aichi, Japan
 - Manager of Aichi Digital Communication Ham Club (JJ2YYK)
@@ -177,9 +171,4 @@ GPL v3
 - WPSD Developers
 - Pi-Star Community
 - MMDVM Developers
-
----
-
-## 📬 サポート
-
-不具合報告・改善提案はGitHub Issuesへお願いします。
+  
