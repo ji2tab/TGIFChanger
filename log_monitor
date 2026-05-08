@@ -11,7 +11,7 @@
 # sysfs フォールバック対応。
 # =============================================================================
 
-VERSION="proto-1.0.5"
+VERSION="proto-1.0.6"
 CONF_FILE="/etc/tgifchanger.conf"
 MMDVM_CONF="/etc/mmdvmhost"
 
@@ -87,8 +87,8 @@ set_gpio() {
                 # 既存の保持プロセスを停止
                 if [ -n "$GPIOSET_PID" ] && kill -0 "$GPIOSET_PID" 2>/dev/null; then
                     kill "$GPIOSET_PID" 2>/dev/null
-                    wait "$GPIOSET_PID" 2>/dev/null
                     GPIOSET_PID=""
+                    sleep 0.1
                 fi
                 if [ "$val" = "1" ]; then
                     # バックグラウンドで起動: プロセスが生きている間 HIGH を維持
@@ -110,8 +110,8 @@ set_gpio() {
 cleanup_gpio() {
     if [ -n "$GPIOSET_PID" ] && kill -0 "$GPIOSET_PID" 2>/dev/null; then
         kill "$GPIOSET_PID" 2>/dev/null
-        wait "$GPIOSET_PID" 2>/dev/null
         GPIOSET_PID=""
+        sleep 0.1
     fi
     if [ "$GPIO_MODE" = "libgpiod" ] && [ "${LIBGPIOD_MAJOR}" -ge 2 ]; then
         gpioset -c "$GPIO_CHIP" "${GPIO_PIN}=0" 2>/dev/null
