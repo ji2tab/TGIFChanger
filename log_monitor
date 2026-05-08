@@ -6,12 +6,12 @@
 # Raspberry Pi の GPIO 出力ピンに反映するブリッジ。
 #
 # libgpiod v2 対応:
-#   HIGH: gpioset --mode=signal をバックグラウンド起動しPIDを保持
-#   LOW : そのPIDをkillして解放
+#   HIGH: gpioset をバックグラウンド起動しPIDを保持（プロセス生存中はHIGH維持）
+#   LOW : そのPIDをkillして解放後、gpioset 17=0 を一瞬実行
 # sysfs フォールバック対応。
 # =============================================================================
 
-VERSION="proto-1.0.4"
+VERSION="proto-1.0.5"
 CONF_FILE="/etc/tgifchanger.conf"
 MMDVM_CONF="/etc/mmdvmhost"
 
@@ -72,7 +72,7 @@ detect_libgpiod_version() {
 
 # --- GPIO 制御 --------------------------------------------------------------
 GPIO_STATE=-1
-GPIOSET_PID=""   # libgpiod v2: HIGH保持プロセスのPID
+GPIOSET_PID=""   # HIGH保持プロセスのPID
 
 set_gpio() {
     local val=$1
@@ -84,19 +84,18 @@ set_gpio() {
             ;;
         libgpiod)
             if [ "${LIBGPIOD_MAJOR}" -ge 2 ]; then
-                # 既存の HIGH 保持プロセスを停止
+                # 既存の保持プロセスを停止
                 if [ -n "$GPIOSET_PID" ] && kill -0 "$GPIOSET_PID" 2>/dev/null; then
                     kill "$GPIOSET_PID" 2>/dev/null
                     wait "$GPIOSET_PID" 2>/dev/null
                     GPIOSET_PID=""
                 fi
                 if [ "$val" = "1" ]; then
-                    # --mode=signal: SIGTERM が来るまで HIGH を保持
-                    gpioset --mode=signal -c "$GPIO_CHIP" "${GPIO_PIN}=1" &
+                    # バックグラウンドで起動: プロセスが生きている間 HIGH を維持
+                    gpioset -c "$GPIO_CHIP" "${GPIO_PIN}=1" &
                     GPIOSET_PID=$!
                 else
-                    # LOW はプロセス終了で自動的に解放済み
-                    # 念のため明示的に 0 を一瞬セット
+                    # LOW: プロセス終了後に一瞬セットして確実に解放
                     gpioset -c "$GPIO_CHIP" "${GPIO_PIN}=0" 2>/dev/null
                 fi
             else
@@ -109,7 +108,6 @@ set_gpio() {
 }
 
 cleanup_gpio() {
-    # HIGH 保持プロセスを確実に停止してから LOW にする
     if [ -n "$GPIOSET_PID" ] && kill -0 "$GPIOSET_PID" 2>/dev/null; then
         kill "$GPIOSET_PID" 2>/dev/null
         wait "$GPIOSET_PID" 2>/dev/null
@@ -139,7 +137,6 @@ if [ "$GPIO_MODE" = "libgpiod" ]; then
     detect_gpio_chip
     detect_libgpiod_version
 else
-    # sysfs 初期化
     [ ! -d "/sys/class/gpio/gpio${GPIO_PIN}" ] \
         && echo "${GPIO_PIN}" > /sys/class/gpio/export 2>/dev/null
     sleep 0.1
