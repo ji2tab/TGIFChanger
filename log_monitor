@@ -3,8 +3,8 @@
 # log_monitor - MMDVM to GPIO Bridge (Version 1.2.4)
 # -----------------------------------------------------------------------------
 # 変更内容:
-#   - /etc/mmdvmhost から自局コールサイン (Callsign=) を自動取得
-#   - 取得した自局からの送信を無視することで無限ループを自動防止
+#   - /etc/mmdvmhost から Callsign=JJ2ZAR を自動取得
+#   - 自局の送信ログを検知した場合は GPIO 出力を抑制（無限ループ防止）
 # =============================================================================
 
 VERSION="proto-1.0.2"
@@ -29,7 +29,7 @@ log() {
 get_my_callsign() {
     local call=""
     if [ -f "$MMDVM_CONF" ]; then
-        # [General] セクションの Callsign= を取得
+        # mmdvmhost の [General] セクションから Callsign を抽出
         call=$(grep -m 1 "^Callsign=" "$MMDVM_CONF" | awk -F= '{print $2}' | tr -d '\r ' | tr '[:lower:]' '[:upper:]')
     fi
     echo "$call"
@@ -37,29 +37,64 @@ get_my_callsign() {
 
 MY_CALL=$(get_my_callsign)
 if [ -z "$MY_CALL" ]; then
-    log "⚠️  自局コールサインを取得できませんでした。ループ防止機能が制限されます。"
+    log "⚠️  自局コールサインを取得できませんでした。ループ防止が動作しません。"
 else
-    log "🆔 自局コールサインを検出: $MY_CALL (このコールサインは無視されます)"
+    log "🆔 自局コールサインを検出: $MY_CALL (この局の送信は無視します)"
 fi
 
-# --- GPIO 初期化ロジック (省略なし) -----------------------------------------
-# (detect_gpio_backend, set_gpio などの関数群は 1.2.2/1.2.3 と同等)
+# --- GPIO バックエンド検出 & 初期化 -----------------------------------------
+detect_gpio_backend() {
+    if [ "$GPIO_BACKEND" = "sysfs" ]; then GPIO_MODE="sysfs"; return; fi
+    command -v gpioset >/dev/null 2>&1 && GPIO_MODE="libgpiod" || GPIO_MODE="sysfs"
+}
+
+init_gpio() {
+    if [ "$GPIO_MODE" = "sysfs" ]; then
+        [ ! -d "/sys/class/gpio/gpio${GPIO_PIN}" ] && echo "${GPIO_PIN}" > /sys/class/gpio/export 2>/dev/null
+        sleep 0.1
+        echo out > "/sys/class/gpio/gpio${GPIO_PIN}/direction" 2>/dev/null
+        echo 0   > "/sys/class/gpio/gpio${GPIO_PIN}/value"     2>/dev/null
+    fi
+}
+
+set_gpio() {
+    local val=$1
+    if [ "$GPIO_MODE" = "libgpiod" ]; then
+        gpioset 0 "${GPIO_PIN}=${val}" 2>/dev/null
+    else
+        echo "$val" > "/sys/class/gpio/gpio${GPIO_PIN}/value" 2>/dev/null
+    fi
+}
+
+cleanup() {
+    log "⚠️  停止シグナルを受信。GPIOをリセットします。"
+    set_gpio 0
+    [ "$GPIO_MODE" = "sysfs" ] && echo "${GPIO_PIN}" > /sys/class/gpio/unexport 2>/dev/null
+    exit 0
+}
+
+trap cleanup SIGINT SIGTERM
+detect_gpio_backend && init_gpio
 
 # --- ログ追従ループ ---------------------------------------------------------
-# (start_tail, get_latest_log などの関数群)
+get_latest_log() { ls -t "${LOG_DIR}"/MMDVM-*.log 2>/dev/null | head -1; }
+
+current_file=$(get_latest_log)
+exec 3< <(tail -n 0 -F "$current_file" 2>/dev/null)
+
+log "🚀 log_monitor (${VERSION}) 監視開始: $(basename "$current_file")"
 
 while :; do
     if read -r -t 5 line <&3; then
-        # スロットフィルタ
+        # スロット判定
         echo "$line" | grep -q "Slot ${WATCH_SLOT}," || continue
 
         # --- 受信開始判定 ---
         if echo "$line" | grep -q "received.*voice header"; then
-            # 送信元コールサインの抽出
             from_call=$(echo "$line" | sed -E 's/.*from ([^ ]+) .*/\1/' | tr '[:lower:]' '[:upper:]')
             
-            # 自局コールサイン判定 (自動取得した値と比較)
-            if [ -n "$MY_CALL" ] && [ "$from_call" = "$MY_CALL" ]; then
+            # 自局（JJ2ZAR）なら無視してループ防止
+            if [ "$from_call" = "$MY_CALL" ]; then
                 log "[  SKIPPING  ] Self-transmission ($from_call) - Loop prevented."
                 continue
             fi
@@ -67,28 +102,24 @@ while :; do
             tg=$(echo "$line" | sed -E 's/.*to TG ([0-9]+).*/\1/')
             if [ "$tg" = "$WATCH_TG" ]; then
                 set_gpio 1
-                log "[ RECEIVING ] TG${tg} | From: ${from_call} | GPIO${GPIO_PIN}: HIGH"
+                log "[ RECEIVING ] TG${tg} | From: ${from_call} | GPIO: HIGH"
             fi
-            continue
-        fi
-
         # --- 受信終了判定 ---
-        if echo "$line" | grep -q "end of voice transmission"; then
+        elif echo "$line" | grep -q "end of voice transmission"; then
             tg=$(echo "$line" | sed -E 's/.*to TG ([0-9]+).*/\1/')
             if [ "$tg" = "$WATCH_TG" ]; then
                 set_gpio 0
-                log "[   IDLE    ] TG${tg} | GPIO${GPIO_PIN}: LOW"
+                log "[   IDLE    ] TG${tg} | GPIO: LOW"
             fi
-            continue
         fi
     else
-        # ログ切替チェック
-        latest=$(ls -t "${LOG_DIR}"/MMDVM-*.log 2>/dev/null | head -1)
+        # ログファイルの日付切替チェック
+        latest=$(get_latest_log)
         if [ -n "$latest" ] && [ "$latest" != "$current_file" ]; then
             log "📅 ログ切替: $latest"
             current_file="$latest"
             set_gpio 0
-            exec 3< <(tail -n 0 -F "$current_file")
+            exec 3< <(tail -n 0 -F "$current_file" 2>/dev/null)
         fi
     fi
 done
