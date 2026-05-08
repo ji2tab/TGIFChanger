@@ -1,0 +1,153 @@
+#!/bin/bash
+# =============================================================================
+# tg_change - TGIF Talk Group Changer
+# -----------------------------------------------------------------------------
+# DMRGateway / MMDVMHost の設定から DMR ID を自動取得し、
+# TGIF Network の API を呼び出して指定スロットの TG を即時変更する。
+#
+# Usage:
+#   tg_change -<TG番号>           # スロット1
+#   tg_change -<TG番号>:<スロット>  # スロット指定
+#   tg_change -h | --help
+#
+# Example:
+#   tg_change -44011        # スロット1 を TG44011 に変更
+#   tg_change -168:2        # スロット2 を TG168 に変更
+# =============================================================================
+
+VERSION="proto-1.0.0"
+CONF_FILE="/etc/tgifchanger.conf"
+
+# --- 設定読込 (デフォルト値) ------------------------------------------------
+TGIF_API="http://tgif.network:5040/api/sessions/update"
+TGIF_API_TIMEOUT="10"
+
+# 設定ファイルがあれば上書き
+[ -f "$CONF_FILE" ] && . "$CONF_FILE"
+
+SCRIPT_NAME=$(basename "$0")
+
+# --- DMR ID 自動取得 -------------------------------------------------------
+# 優先順位: 1) /etc/dmrgateway の [DMR Network 4] (TGIF), 2) /etc/mmdvmhost
+get_dmr_id() {
+    local id=""
+
+    if [ -f /etc/dmrgateway ]; then
+        id=$(sed -n '/\[DMR Network 4\]/,/^\[/p' /etc/dmrgateway \
+             | grep -m 1 "^Id=" \
+             | awk -F= '{print $2}' \
+             | tr -d '\r ' \
+             | cut -d'#' -f1)
+    fi
+
+    if [ -z "$id" ] && [ -f /etc/mmdvmhost ]; then
+        id=$(grep -m 1 "^Id=" /etc/mmdvmhost \
+             | awk -F= '{print $2}' \
+             | tr -d '\r ' \
+             | cut -d'#' -f1)
+    fi
+
+    echo "$id"
+}
+
+show_help() {
+    cat <<EOF
+$SCRIPT_NAME (TGIFChanger ${VERSION})
+
+使用方法:
+  $SCRIPT_NAME -<TG番号>           スロット1 の TG を変更
+  $SCRIPT_NAME -<TG番号>:<スロット> 指定スロットの TG を変更
+  $SCRIPT_NAME -h | --help         このヘルプを表示
+
+例:
+  $SCRIPT_NAME -44011    # スロット1 を TG44011 に
+  $SCRIPT_NAME -168:2    # スロット2 を TG168 に
+
+設定ファイル: $CONF_FILE
+EOF
+}
+
+change_tg() {
+    local slot=$1
+    local tg=$2
+
+    if ! [[ "$tg" =~ ^[0-9]+$ ]]; then
+        echo "❌ エラー: TG番号は数字で指定してください: $tg" >&2
+        return 1
+    fi
+
+    if ! [[ "$slot" =~ ^[12]$ ]]; then
+        echo "❌ エラー: スロットは 1 または 2 を指定してください: $slot" >&2
+        return 1
+    fi
+
+    # TGIF API は slot を 0-indexed で受け付ける
+    local slot_idx=$((slot - 1))
+    local api_url="${TGIF_API}/${DMR_ID}/${slot_idx}/${tg}"
+
+    echo "Changing Slot ${slot} to TG ${tg} (DMR ID: ${DMR_ID})..."
+
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+                --max-time "$TGIF_API_TIMEOUT" "$api_url")
+    local curl_rc=$?
+
+    if [ $curl_rc -ne 0 ]; then
+        echo "❌ エラー: TGIF API への通信に失敗しました (curl exit=$curl_rc)" >&2
+        return 1
+    fi
+
+    if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+        echo "✅ TG変更リクエスト送信完了 (HTTP $http_code)"
+        return 0
+    else
+        echo "⚠️  HTTP $http_code が返却されました (リクエストは送信済)" >&2
+        return 1
+    fi
+}
+
+# --- メイン ------------------------------------------------------------------
+# 先にヘルプ・引数なしを処理 (DMR ID 取得は不要)
+if [ $# -eq 0 ]; then
+    show_help
+    exit 0
+fi
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) show_help; exit 0 ;;
+    esac
+done
+
+# DMR ID 取得 (実際にAPI呼び出しを行う場合のみ必要)
+DMR_ID=$(get_dmr_id)
+if [ -z "$DMR_ID" ]; then
+    echo "❌ エラー: DMR ID を取得できませんでした。" >&2
+    echo "   /etc/dmrgateway または /etc/mmdvmhost を確認してください。" >&2
+    exit 1
+fi
+
+# 引数解析
+exit_code=0
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -[0-9]*)
+            target="${arg#-}"
+            tg="${target%:*}"
+            slot="${target##*:}"
+            # ":" が無い場合は slot=tg になるのでデフォルト1へ
+            [ "$slot" = "$tg" ] && slot=1
+            change_tg "$slot" "$tg" || exit_code=1
+            ;;
+        *)
+            echo "❌ 不明な引数: $arg" >&2
+            show_help
+            exit 1
+            ;;
+    esac
+done
+
+exit $exit_code
