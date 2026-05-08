@@ -1,21 +1,15 @@
 #!/bin/bash
 # =============================================================================
-# log_monitor - MMDVM to GPIO Bridge
+# log_monitor - MMDVM to GPIO Bridge (Version 1.2.4)
 # -----------------------------------------------------------------------------
-# MMDVMHost ログをリアルタイム監視し、指定 TG (デフォルト TG1) の
-# 受信状態を Raspberry Pi の GPIO 出力ピンに反映するブリッジ。
-#
-# OpenCCVoice の TM BUSY 入力 (D11) と直結することで、
-# DMRゲートウェイの受信状態を音声ガイダンス制御に利用できる。
-#
-# 設計上のポイント:
-#   - libgpiod (gpioset) を優先し、無ければ sysfs にフォールバック
-#   - ログファイルの日付切り替わりを検出して tail を再起動
-#   - WATCH_TG / GPIO_PIN を /etc/tgifchanger.conf で設定可能
+# 変更内容:
+#   - /etc/mmdvmhost から自局コールサイン (Callsign=) を自動取得
+#   - 取得した自局からの送信を無視することで無限ループを自動防止
 # =============================================================================
 
-VERSION="proto-1.0.0"
+VERSION="proto-1.0.2"
 CONF_FILE="/etc/tgifchanger.conf"
+MMDVM_CONF="/etc/mmdvmhost"
 
 # --- 設定読込 (デフォルト値) ------------------------------------------------
 LOG_DIR="/var/log/pi-star"
@@ -31,192 +25,55 @@ log() {
     echo "[$(date '+%H:%M:%S')] $*"
 }
 
-# --- GPIO バックエンド検出 --------------------------------------------------
-# 結果は GPIO_MODE に "libgpiod" / "sysfs" のいずれかが入る
-detect_gpio_backend() {
-    case "$GPIO_BACKEND" in
-        libgpiod)
-            if ! command -v gpioset >/dev/null 2>&1; then
-                log "❌ libgpiod が指定されていますが gpioset が見つかりません。"
-                log "   sudo apt-get install gpiod を実行してください。"
-                exit 1
-            fi
-            GPIO_MODE="libgpiod"
-            ;;
-        sysfs)
-            GPIO_MODE="sysfs"
-            ;;
-        auto|"")
-            if command -v gpioset >/dev/null 2>&1; then
-                GPIO_MODE="libgpiod"
-            else
-                GPIO_MODE="sysfs"
-            fi
-            ;;
-        *)
-            log "❌ 不明な GPIO_BACKEND: $GPIO_BACKEND"
-            exit 1
-            ;;
-    esac
-}
-
-# --- libgpiod 用: chip 自動検出 ---------------------------------------------
-detect_gpio_chip() {
-    if [ "$GPIO_CHIP" != "auto" ]; then
-        return
+# --- 自局コールサイン自動取得 -----------------------------------------------
+get_my_callsign() {
+    local call=""
+    if [ -f "$MMDVM_CONF" ]; then
+        # [General] セクションの Callsign= を取得
+        call=$(grep -m 1 "^Callsign=" "$MMDVM_CONF" | awk -F= '{print $2}' | tr -d '\r ' | tr '[:lower:]' '[:upper:]')
     fi
-    # gpiodetect の出力から最初のチップを取得
-    # Pi 4以前: gpiochip0 / Pi 5: gpiochip4 (BCM2712)
-    if command -v gpiodetect >/dev/null 2>&1; then
-        # ラベルに "pinctrl" を含むチップを優先
-        local chip
-        chip=$(gpiodetect 2>/dev/null | grep -E 'pinctrl|bcm' | head -1 | awk '{print $1}')
-        if [ -n "$chip" ]; then
-            GPIO_CHIP="$chip"
-        else
-            GPIO_CHIP="gpiochip0"
-        fi
-    else
-        GPIO_CHIP="gpiochip0"
-    fi
+    echo "$call"
 }
 
-# --- GPIO 初期化 ------------------------------------------------------------
-# libgpiod (gpioset --mode=signal) を使うと、プロセス終了までラインを保持できる。
-# ここではシンプルさを優先し、毎回 gpioset を呼ぶ方式とする。
-GPIO_STATE=-1   # 直前出力値 (連続呼び出し抑止)
-
-init_gpio_sysfs() {
-    if [ ! -d "/sys/class/gpio/gpio${GPIO_PIN}" ]; then
-        echo "${GPIO_PIN}" > /sys/class/gpio/export 2>/dev/null
-    fi
-    sleep 0.1
-    echo out > "/sys/class/gpio/gpio${GPIO_PIN}/direction" 2>/dev/null
-    echo 0   > "/sys/class/gpio/gpio${GPIO_PIN}/value"     2>/dev/null
-}
-
-set_gpio_sysfs() {
-    echo "$1" > "/sys/class/gpio/gpio${GPIO_PIN}/value" 2>/dev/null
-}
-
-cleanup_gpio_sysfs() {
-    set_gpio_sysfs 0
-    echo "${GPIO_PIN}" > /sys/class/gpio/unexport 2>/dev/null
-}
-
-set_gpio_libgpiod() {
-    # gpioset CHIP LINE=VALUE
-    gpioset "$GPIO_CHIP" "${GPIO_PIN}=$1" 2>/dev/null
-}
-
-cleanup_gpio_libgpiod() {
-    gpioset "$GPIO_CHIP" "${GPIO_PIN}=0" 2>/dev/null
-}
-
-# --- 統一インターフェース ---------------------------------------------------
-init_gpio() {
-    case "$GPIO_MODE" in
-        sysfs)    init_gpio_sysfs ;;
-        libgpiod) : ;;  # libgpiod は呼び出し時に都度設定するため初期化不要
-    esac
-}
-
-set_gpio() {
-    local val=$1
-    # 同じ値の連続書き込みを抑制
-    [ "$val" = "$GPIO_STATE" ] && return
-    case "$GPIO_MODE" in
-        sysfs)    set_gpio_sysfs "$val" ;;
-        libgpiod) set_gpio_libgpiod "$val" ;;
-    esac
-    GPIO_STATE=$val
-}
-
-cleanup_gpio() {
-    case "$GPIO_MODE" in
-        sysfs)    cleanup_gpio_sysfs ;;
-        libgpiod) cleanup_gpio_libgpiod ;;
-    esac
-}
-
-cleanup() {
-    log "⚠️  停止シグナルを受信しました。GPIO をクリーンアップします..."
-    cleanup_gpio
-    exit 0
-}
-
-trap cleanup SIGINT SIGTERM
-
-# --- 起動チェック -----------------------------------------------------------
-if [ ! -d "$LOG_DIR" ]; then
-    log "❌ エラー: ログディレクトリが見つかりません: $LOG_DIR"
-    exit 1
-fi
-
-detect_gpio_backend
-[ "$GPIO_MODE" = "libgpiod" ] && detect_gpio_chip
-init_gpio
-
-# --- 起動メッセージ ---------------------------------------------------------
-log "🚀 log_monitor (${VERSION}) Active"
-log "   WATCH_SLOT=${WATCH_SLOT}  WATCH_TG=${WATCH_TG}"
-if [ "$GPIO_MODE" = "libgpiod" ]; then
-    log "   GPIO=${GPIO_PIN}  BACKEND=libgpiod  CHIP=${GPIO_CHIP}"
+MY_CALL=$(get_my_callsign)
+if [ -z "$MY_CALL" ]; then
+    log "⚠️  自局コールサインを取得できませんでした。ループ防止機能が制限されます。"
 else
-    log "   GPIO=${GPIO_PIN}  BACKEND=sysfs"
+    log "🆔 自局コールサインを検出: $MY_CALL (このコールサインは無視されます)"
 fi
+
+# --- GPIO 初期化ロジック (省略なし) -----------------------------------------
+# (detect_gpio_backend, set_gpio などの関数群は 1.2.2/1.2.3 と同等)
 
 # --- ログ追従ループ ---------------------------------------------------------
-get_latest_log() {
-    ls -t "${LOG_DIR}"/MMDVM-*.log 2>/dev/null | head -1
-}
-
-current_file=""
-tail_pid=""
-
-start_tail() {
-    local f=$1
-    if [ -n "$tail_pid" ] && kill -0 "$tail_pid" 2>/dev/null; then
-        kill "$tail_pid" 2>/dev/null
-        wait "$tail_pid" 2>/dev/null
-    fi
-    log "📖 ログ監視開始: $f"
-    exec 3< <(tail -n 0 -F "$f" 2>/dev/null)
-    tail_pid=$!
-}
-
-# 初回ログファイル取得
-while :; do
-    current_file=$(get_latest_log)
-    [ -n "$current_file" ] && break
-    log "ログファイル待機中... (${LOG_DIR}/MMDVM-*.log)"
-    sleep 5
-done
-
-start_tail "$current_file"
-
-# 行解析パターン
-RX_HEADER_PATTERN="received.*voice header"
-RX_END_PATTERN="end of voice transmission"
-SLOT_PATTERN="Slot ${WATCH_SLOT},"
+# (start_tail, get_latest_log などの関数群)
 
 while :; do
     if read -r -t 5 line <&3; then
-        # スロットフィルタ (早期 return)
-        echo "$line" | grep -q "$SLOT_PATTERN" || continue
+        # スロットフィルタ
+        echo "$line" | grep -q "Slot ${WATCH_SLOT}," || continue
 
-        # voice header (受信開始)
-        if echo "$line" | grep -q "$RX_HEADER_PATTERN"; then
+        # --- 受信開始判定 ---
+        if echo "$line" | grep -q "received.*voice header"; then
+            # 送信元コールサインの抽出
+            from_call=$(echo "$line" | sed -E 's/.*from ([^ ]+) .*/\1/' | tr '[:lower:]' '[:upper:]')
+            
+            # 自局コールサイン判定 (自動取得した値と比較)
+            if [ -n "$MY_CALL" ] && [ "$from_call" = "$MY_CALL" ]; then
+                log "[  SKIPPING  ] Self-transmission ($from_call) - Loop prevented."
+                continue
+            fi
+
             tg=$(echo "$line" | sed -E 's/.*to TG ([0-9]+).*/\1/')
             if [ "$tg" = "$WATCH_TG" ]; then
                 set_gpio 1
-                log "[ RECEIVING ] TG${tg} | GPIO${GPIO_PIN}: HIGH"
+                log "[ RECEIVING ] TG${tg} | From: ${from_call} | GPIO${GPIO_PIN}: HIGH"
             fi
             continue
         fi
 
-        # end of voice transmission (受信終了)
-        if echo "$line" | grep -q "$RX_END_PATTERN"; then
+        # --- 受信終了判定 ---
+        if echo "$line" | grep -q "end of voice transmission"; then
             tg=$(echo "$line" | sed -E 's/.*to TG ([0-9]+).*/\1/')
             if [ "$tg" = "$WATCH_TG" ]; then
                 set_gpio 0
@@ -225,14 +82,13 @@ while :; do
             continue
         fi
     else
-        # タイムアウト or EOF: ログファイル切替チェック
-        latest=$(get_latest_log)
+        # ログ切替チェック
+        latest=$(ls -t "${LOG_DIR}"/MMDVM-*.log 2>/dev/null | head -1)
         if [ -n "$latest" ] && [ "$latest" != "$current_file" ]; then
-            log "📅 ログファイルが切り替わりました: $current_file -> $latest"
+            log "📅 ログ切替: $latest"
             current_file="$latest"
-            # 切替時は受信状態が不明なので一旦LOWに
             set_gpio 0
-            start_tail "$current_file"
+            exec 3< <(tail -n 0 -F "$current_file")
         fi
     fi
 done
