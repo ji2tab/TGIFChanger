@@ -1,9 +1,9 @@
 #!/bin/bash
 # =============================================================================
 # TGIFChanger - TGIF Talk Group Changer API Bridge
-# 
+#
 # File:        tg_change.sh
-# Version:     v1.2.2
+# Version:     v1.2.4
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # Description: Automatically retrieves DMR ID from DMRGateway/MMDVMHost
 #              and makes an HTTP request to the TGIF API to change the
@@ -12,7 +12,7 @@
 # License:     GPL v3
 # =============================================================================
 
-VERSION="v1.2.2"
+VERSION="v1.2.4"
 CONF_FILE="/etc/tgifchanger.conf"
 
 # --- 設定読込 (デフォルト値) ------------------------------------------------
