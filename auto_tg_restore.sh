@@ -1,9 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# auto_tg_restore.sh - TGIF Auto TG Restore Daemon
-# VERSION: v1.2.1 (Dynamic Network Tracking)
+# TGIFChanger - Auto TG Restore Daemon
+# 
+# File:        auto_tg_restore.sh
+# Version:     v1.2.2
+# Author:      Kazuhiko Shinoda (JI2TAB)
+# Description: Monitors MMDVM logs to detect the end of voice transmissions.
+#              Automatically restores the connection to the designated Home TG
+#              after a specified delay. Optimized for Pi-Star and WPSD.
+# License:     GPL v3
 # =============================================================================
-VERSION="v1.2.1"
+
+VERSION="v1.2.2"
 CONF_FILE="/etc/tgifchanger.conf"
 MMDVM_CONF="/etc/mmdvmhost"
 LOG_DIR="/var/log/pi-star"
@@ -19,7 +27,6 @@ RESTORE_PID_FILE="/run/auto_tg_restore.pid"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
-# --- TG動的取得ロジック (柔軟な追従対応) ---
 get_dynamic_tgs() {
     WATCH_TG=""
     RESTORE_TG=""
@@ -28,13 +35,12 @@ get_dynamic_tgs() {
             /^\[DMR Network / { in_dmr=1; is_tgif=0; next }
             /^\[/ { in_dmr=0 }
             in_dmr && /Address=tgif\.network/ { is_tgif=1 }
-            in_dmr && is_tgif && /^TGRewrite1=/ { print; exit }
+            in_dmr && is_tgif && /^TGRewrite/ { print; exit }
         ' "$MMDVM_CONF")
-        
         if [ -n "$rewrite_line" ]; then
             local vals=$(echo "$rewrite_line" | awk -F= '{print $2}')
-            WATCH_TG=$(echo "$vals" | cut -d, -f2 | tr -d '\r')
-            RESTORE_TG=$(echo "$vals" | cut -d, -f4 | tr -d '\r')
+            WATCH_TG=$(echo "$vals" | cut -d, -f2 | tr -dc '0-9')
+            RESTORE_TG=$(echo "$vals" | cut -d, -f4 | tr -dc '0-9')
         fi
     fi
     [ -z "$WATCH_TG" ] && WATCH_TG="6"
@@ -78,13 +84,11 @@ while :; do
     if read -r -t 5 line <&3; then
         if echo "$line" | grep -q "Slot ${WATCH_SLOT}," && echo "$line" | grep -q "end of voice transmission"; then
             tg=$(echo "$line" | grep -oP 'to TG \K[0-9]+')
-            
             if [[ "$tg" =~ ^[0-9]+$ ]] && [ "$tg" != "$RESTORE_TG" ] && [ "$tg" != "$WATCH_TG" ]; then
                 schedule_restore "$tg"
             else
                 log "ℹ️ [SKIP] TG ${tg} は自動復帰の対象外です。"
             fi
-            
         elif echo "$line" | grep -q "Slot ${WATCH_SLOT}," && echo "$line" | grep -q "voice header"; then
             cancel_pending_restore
         fi
