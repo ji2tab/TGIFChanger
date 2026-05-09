@@ -3,21 +3,26 @@
 # TGIFChanger - Auto TG Restore Daemon
 # 
 # File:        auto_tg_restore.sh
-# Version:     v1.2.2
+# Version:     v1.2.4
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # Description: Monitors MMDVM logs to detect the end of voice transmissions.
 #              Automatically restores the connection to the designated Home TG
 #              after a specified delay. Optimized for Pi-Star and WPSD.
+#              (v1.2.4: Prioritizes explicit config over auto-detection)
 # License:     GPL v3
 # =============================================================================
 
-VERSION="v1.2.2"
+VERSION="v1.2.4"
 CONF_FILE="/etc/tgifchanger.conf"
 MMDVM_CONF="/etc/mmdvmhost"
 LOG_DIR="/var/log/pi-star"
 WATCH_SLOT="2"
 RESTORE_DELAY="120"
 RESTORE_SLOT="2"
+
+# 初期値として空にしておく
+WATCH_TG=""
+RESTORE_TG=""
 
 [ -f "$CONF_FILE" ] && . "$CONF_FILE"
 
@@ -28,8 +33,12 @@ RESTORE_PID_FILE="/run/auto_tg_restore.pid"
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 get_dynamic_tgs() {
-    WATCH_TG=""
-    RESTORE_TG=""
+    # 1. tgifchanger.confで両方設定されていれば、それを最優先する
+    if [ -n "$WATCH_TG" ] && [ -n "$RESTORE_TG" ]; then
+        return
+    fi
+
+    # 2. 設定ファイルに無い場合のみ、mmdvmhost から抽出を試みる
     if [ -f "$MMDVM_CONF" ]; then
         local rewrite_line=$(awk '
             /^\[DMR Network / { in_dmr=1; is_tgif=0; next }
@@ -39,10 +48,12 @@ get_dynamic_tgs() {
         ' "$MMDVM_CONF")
         if [ -n "$rewrite_line" ]; then
             local vals=$(echo "$rewrite_line" | awk -F= '{print $2}')
-            WATCH_TG=$(echo "$vals" | cut -d, -f2 | tr -dc '0-9')
-            RESTORE_TG=$(echo "$vals" | cut -d, -f4 | tr -dc '0-9')
+            [ -z "$WATCH_TG" ] && WATCH_TG=$(echo "$vals" | cut -d, -f2 | tr -dc '0-9')
+            [ -z "$RESTORE_TG" ] && RESTORE_TG=$(echo "$vals" | cut -d, -f4 | tr -dc '0-9')
         fi
     fi
+
+    # 3. それでも空っぽなら、最終フォールバック値を入れる
     [ -z "$WATCH_TG" ] && WATCH_TG="6"
     [ -z "$RESTORE_TG" ] && RESTORE_TG="44833"
 }
