@@ -3,7 +3,7 @@
 # TGIFChanger - Automated Installer / Updater
 # 
 # File:        install.sh
-# Version:     v1.2.2
+# Version:     v1.2.4
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # Description: Installs or updates the TGIFChanger suite on Pi-Star/WPSD.
 #              Automatically detects existing installations, safely stops
@@ -13,7 +13,7 @@
 
 set -e
 
-VERSION="v1.2.2"
+VERSION="v1.2.4"
 INSTALL_DIR="/opt/tgifchanger"
 BIN_DIR="/usr/local/bin"
 CONF_DIR="/etc"
