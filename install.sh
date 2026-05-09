@@ -3,7 +3,7 @@
 # TGIFChanger - Automated Installer / Updater
 # 
 # File:        install.sh
-# Version:     v1.2.4
+# Version:     v1.2.5 (Buster EOL Hotfix)
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # Description: Installs or updates the TGIFChanger suite on Pi-Star/WPSD.
 #              Automatically detects existing installations, safely stops
@@ -13,7 +13,7 @@
 
 set -e
 
-VERSION="v1.2.4"
+VERSION="v1.2.5"
 INSTALL_DIR="/opt/tgifchanger"
 BIN_DIR="/usr/local/bin"
 CONF_DIR="/etc"
@@ -41,9 +41,10 @@ fi
 
 # --- 依存パッケージの確認とインストール --------------------------------------
 if ! command -v gpioset >/dev/null 2>&1; then
-    echo "📦 GPIO制御に必要な 'gpiod' が見つかりません。インストールします..."
-    sudo apt-get update -yq
-    sudo apt-get install -yq gpiod || echo "⚠️ gpiod のインストールに失敗しました (sysfsフォールバックで続行します)"
+    echo "📦 GPIO制御に必要な 'gpiod' が見つかりません。インストールを試みます..."
+    # OSが古く(Buster等)リポジトリが404エラーを返す場合でもスクリプトを止めないための処置
+    sudo apt-get update -yq || true
+    sudo apt-get install -yq gpiod || echo "⚠️ gpiod のインストールに失敗しました (sysfs等でフォールバックして続行します)"
 else
     echo "✅ 依存パッケージ 'gpiod' はインストール済みです。"
 fi
