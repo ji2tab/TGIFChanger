@@ -1,6 +1,6 @@
 # TGIFChanger (for OpenCCVoice & WPSD/Pi-Star)
 
-**Version v1.2.2 (Dynamic Network Tracking Edition)**
+**Version v1.2.4 (Ultimate GPIO Engine & Config Priority Edition)**
 
 TGIFChanger は、MMDVM（Pi-Star / WPSD）環境において
 TGIF ネットワークの運用を自動化・高度化するためのツールセットです。
@@ -36,25 +36,28 @@ DMRGateway の設定から DMR ID を自動取得し、
 ### Auto TG Restore (`auto_tg_restore`)
 
 通信終了から指定秒数（デフォルト 120 秒）後、自動的にホーム TG へ復帰します。
-v1.2.1 以降では、ホーム TG 番号を `/etc/mmdvmhost` の TGRewrite 設定から自動取得・追従します。
+設定ファイル（`tgifchanger.conf`）での手動指定を最優先とし、
+未指定の場合は `/etc/mmdvmhost` から自動で追従します。
 
 ### GPIO Bridge (`log_monitor`)
 
 指定 TG の受信状態をリアルタイムで監視します。
 受信中は Raspberry Pi の GPIO17 を HIGH 出力し、外部機器へ状態を通知します。
-v1.2.1 以降では、監視対象 TG 番号も `/etc/mmdvmhost` から自動取得・追従します。
+監視対象 TG 番号は設定ファイルを最優先とし、未指定の場合は `/etc/mmdvmhost` から自動取得・追従します。
 
 ---
 
-## v1.2.2 の主な変更点
+## v1.2.4 の主な変更点
 
-- **Dynamic Network Tracking（動的追従）**
-    - `/etc/mmdvmhost` から TGIF ネットワーク設定を自動検出
+- **Ultimate GPIO Engine 搭載**
+    - `pinctrl`、`raspi-gpio`、`libgpiod v2`、`sysfs` から環境に最適な GPIO 制御コマンドを自動判別
+    - WPSD や最新の Bookworm 環境でも、エラーなく確実に電圧を保持
+- **設定ファイル絶対優先ロジック**
+    - `/etc/tgifchanger.conf` に明記された TG 番号を最優先で適用する堅牢な設計に変更
+    - WPSD などの複雑な環境でも意図した TG で確実に動作
+- **Dynamic Network Tracking**
     - `TGRewrite` 設定から監視 TG および復帰 TG を動的に取得
-    - DMR Network 番号（Network 4 など）の変更の影響を受けない設計
-- **GPIO 制御の堅牢化**
-    - `libgpiod v2`（Bookworm / WPSD）に完全対応
-    - 旧環境向けに `libgpiod v1` / `sysfs` へ自動フォールバック
+    - DMR Network 番号（Network 4 など）の変更に影響されない柔軟な運用が可能
 - **スマート復帰制御**
     - ホーム TG または監視 TG で通信終了した場合、不要なタイマー起動（復帰処理）を自動抑止
 - **長期運用向け改善**
@@ -84,7 +87,7 @@ GPIO 出力は OpenCCVoice 側の TM BUSY 入力（Arduino Nano の D11）へ接
 
 ---
 
-## 導入手順
+## 導入手順 (インストール)
 
 Raspberry Pi に SSH ログインし、以下のコマンドを実行してください。
 
@@ -97,6 +100,17 @@ curl -L https://raw.githubusercontent.com/ji2tab/TGIFChanger/main/install.sh | b
 
 ---
 
+## 削除手順 (アンインストール)
+
+システムから TGIFChanger のプログラム本体、サービス、設定ファイルをすべて完全に削除し、
+クリーンな状態に戻す場合は以下のコマンドを実行してください。
+
+```bash
+curl -L https://raw.githubusercontent.com/ji2tab/TGIFChanger/main/uninstall.sh | bash
+```
+
+---
+
 ## 設定ファイル
 
 設定は `/etc/tgifchanger.conf` に集約されています。
@@ -104,11 +118,15 @@ curl -L https://raw.githubusercontent.com/ji2tab/TGIFChanger/main/install.sh | b
 ```bash
 LOG_DIR="/var/log/pi-star"
 WATCH_SLOT="2"
+RESTORE_SLOT="2"
 GPIO_PIN="17"
-GPIO_BACKEND="auto"
 GPIO_CHIP="0"
 RESTORE_DELAY="120"
-RESTORE_SLOT="2"
+TGIF_API="http://tgif.network:5040/api/sessions/update"
+
+# WPSD 環境などで特定の TG へ強制固定したい場合は以下のコメントを外して設定します
+# WATCH_TG="168"
+# RESTORE_TG="168"
 ```
 
 設定変更後は、以下のコマンドでサービスを再起動して反映させてください。
