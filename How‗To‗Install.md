@@ -65,20 +65,12 @@ tg_change -168:2
 
 ## 4. アンインストール手順
 
-```bash
-# サービスの停止と自動起動の解除
-sudo systemctl stop log_monitor auto_tg_restore
-sudo systemctl disable log_monitor auto_tg_restore
+以下のコマンド一発で、プログラム本体・サービス・設定ファイルをすべて削除できます。
 
-# サービス定義ファイル等の削除
-sudo rm /etc/systemd/system/log_monitor.service
-sudo rm /etc/systemd/system/auto_tg_restore.service
-sudo systemctl daemon-reload
-sudo rm -rf /opt/tgifchanger
-sudo rm -f /usr/local/bin/tg_change
-sudo rm -f /etc/tgifchanger.conf /etc/tgifchanger.conf.dist
+```bash
+curl -L https://raw.githubusercontent.com/ji2tab/TGIFChanger/main/uninstall.sh | bash
 ```
 
 ---
 
-Author: Kazuhiko Shinoda (JI2TAB) / v1.2.2
+Author: Kazuhiko Shinoda (JI2TAB) / v1.2.4
