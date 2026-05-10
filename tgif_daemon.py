@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# =============================================================================
+# TGIFChanger-Py - Focused Core Daemon (v2.9.5)
+# =============================================================================
 import os, time, threading, re, subprocess, sys
 
-VERSION = "v2.9.0"
+VERSION = "v2.9.5"
 CONF_FILE = "/etc/tgifchanger.conf"
 LOG_DIR = "/var/log/pi-star"
 
@@ -25,19 +28,21 @@ class Config:
                     if r: self.restore_tg = r.group(1)
                     if d: self.delay = int(d.group(1))
             except: pass
-        log(f"⚙️ 設定読込: WATCH={self.watch_tg}, HOME={self.restore_tg}, DELAY={self.delay}s")
+        log(f"⚙️ 設定反映: WATCH={self.watch_tg}, HOME={self.restore_tg}, DELAY={self.delay}s")
 
 cfg = Config()
 restore_timer = None
 
 def set_gpio(state):
     try:
+        # Busyランプとしての挙動
         mode = "dh" if state else "dl"
         subprocess.run(["pinctrl", "set", cfg.gpio_pin, "op", mode], check=False, capture_output=True)
     except: pass
 
 def do_restore():
     log(f"🏠 復帰実行: TG {cfg.restore_tg} へ戻ります")
+    # APIの実行結果をキャプチャしてログに流す (デバッグ性確保)
     res = subprocess.run(["/usr/local/bin/tg_change", f"-{cfg.restore_tg}"], capture_output=True, text=True)
     if res.stdout:
         for l in res.stdout.splitlines(): log(l)
@@ -62,23 +67,19 @@ def main_loop():
                 if get_latest_log() != current_log: break
                 time.sleep(0.05); continue
             
-            # --- 受信検知ロジック (Busyランプ連動) ---
+            # --- 受信検知 (Busy表示連動) ---
             if "voice header" in line.lower() and "to tg" in line.lower():
                 m = re.search(r'to TG\s+(\d+)', line, re.I)
                 if m:
                     active_tg = m.group(1)
                     log(f"⚡ 信号検知: TG {active_tg}")
-                    set_gpio(True) # どんなTGでも信号があれば点灯
-                    
-                    global restore_timer
+                    set_gpio(True) # 全TGで点灯
                     if restore_timer: restore_timer.cancel()
 
-            # --- 信号終了ロジック ---
+            # --- 終了検知 (ログ復活) ---
             if "end of voice" in line.lower() or "end of transmission" in line.lower():
                 log(f"🌑 信号終了 (TG {active_tg if active_tg else '??'})")
-                set_gpio(False) # 信号が切れたら消灯
-                
-                # 監視TG以外なら復帰タイマーを始動
+                set_gpio(False) # 消灯
                 if active_tg and active_tg != cfg.watch_tg:
                     log(f"⏳ 復帰タイマー始動: {cfg.delay}s後に TG {cfg.restore_tg} へ戻ります")
                     if restore_timer: restore_timer.cancel()
@@ -89,4 +90,6 @@ if __name__ == "__main__":
     while True:
         try: main_loop()
         except KeyboardInterrupt: sys.exit(0)
-        except: time.sleep(2)
+        except Exception as e:
+            log(f"⚠️ エラー発生(自動復帰): {e}")
+            time.sleep(5)
