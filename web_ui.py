@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # =============================================================================
-# TGIFChanger-Py - Web UI (v2.5.5)
+# TGIFChanger-Py - Web Dashboard (v2.5.7)
 # 
 # Author:      Kazuhiko Shinoda (JI2TAB)
-# Description: Ultra-lightweight Web Dashboard for remote control.
+# Description: Lightweight Web UI for TGIFChanger control.
 # =============================================================================
 
-import http.server, socketserver, urllib.parse, subprocess, os
+import http.server
+import socketserver
+import urllib.parse
+import subprocess
+import os
 
 PORT = 8080
 CONF_FILE = "/etc/tgifchanger.conf"
 TG_CHANGE_BIN = "/usr/local/bin/tg_change"
 
 def get_config():
+    """現在の設定をファイルから読み取って辞書形式で返す"""
     conf = {"WATCH_TG": "", "RESTORE_TG": "", "RESTORE_DELAY": "120"}
     if os.path.exists(CONF_FILE):
         with open(CONF_FILE, 'r') as f:
@@ -27,6 +32,7 @@ def get_config():
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        """ブラウザに管理画面のHTMLを返す"""
         conf = get_config()
         watch_disp = f"TG {conf['WATCH_TG']}" if conf['WATCH_TG'] else "未設定"
         restore_disp = f"TG {conf['RESTORE_TG']}" if conf['RESTORE_TG'] else "未設定"
@@ -43,38 +49,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <title>TGIFChanger Dashboard</title>
             <style>
-                body {{ font-family: sans-serif; background: #f0f2f5; padding: 15px; color: #333; }}
+                body {{ font-family: -apple-system, sans-serif; background: #f0f2f5; padding: 15px; color: #333; }}
                 .container {{ max-width: 500px; margin: 0 auto; }}
-                .card {{ background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }}
-                h2 {{ text-align: center; margin-top: 0; }}
-                .status-val {{ float: right; font-weight: bold; color: #007bff; }}
-                button {{ width: 100%; padding: 12px; margin: 5px 0; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold; color: white; }}
+                .card {{ background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }}
+                h2, h3 {{ margin-top: 0; color: #1a1a1a; }}
+                .status-item {{ display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }}
+                .status-val {{ font-weight: bold; color: #007bff; }}
+                button {{ width: 100%; padding: 14px; margin: 8px 0; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; color: white; transition: 0.2s; }}
                 .btn-blue {{ background: #007bff; }}
                 .btn-red {{ background: #dc3545; }}
                 .btn-green {{ background: #28a745; }}
-                input {{ width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }}
-                label {{ font-size: 14px; color: #666; font-weight: bold; }}
+                button:hover {{ opacity: 0.9; }}
+                input {{ width: 100%; padding: 12px; margin: 10px 0 20px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 16px; }}
+                label {{ font-size: 14px; font-weight: bold; color: #666; }}
             </style>
         </head>
         <body>
             <div class="container">
                 <div class="card">
                     <h2>🚀 TGIFChanger</h2>
-                    <p>監視TG (WATCH): <span class="status-val">{watch_disp}</span></p>
-                    <p>復帰TG (RESTORE): <span class="status-val">{restore_disp}</span></p>
-                    <p style="border:none;">復帰時間: <span class="status-val">{conf['RESTORE_DELAY']} 秒</span></p>
+                    <div class="status-item"><span>監視対象 (WATCH)</span><span class="status-val">{watch_disp}</span></div>
+                    <div class="status-item"><span>復帰先 (RESTORE)</span><span class="status-val">{restore_disp}</span></div>
+                    <div class="status-item" style="border:none;"><span>自動復帰時間</span><span class="status-val">{conf['RESTORE_DELAY']} 秒</span></div>
                 </div>
+
                 <div class="card">
                     <h3>⚡ クイック操作</h3>
-                    <form method="POST" action="/stop"><button type="submit" class="btn-red">🛑 タイマー強制停止</button></form>
-                    <form method="POST" action="/restore"><button type="submit" class="btn-green">🏠 復帰TGへ戻る</button></form>
+                    <form method="POST" action="/stop"><button type="submit" class="btn-red">🛑 復帰タイマーを今すぐ止める</button></form>
+                    <form method="POST" action="/restore"><button type="submit" class="btn-green">🏠 復帰TG ({conf['RESTORE_TG']}) へ接続</button></form>
                 </div>
+
                 <div class="card">
-                    <h3>⚙️ 設定変更</h3>
+                    <h3>⚙️ 基本設定の変更</h3>
                     <form method="POST" action="/config">
-                        <label>監視TG</label><input type="number" name="watch_tg" value="{conf['WATCH_TG']}">
-                        <label>復帰TG</label><input type="number" name="restore_tg" value="{conf['RESTORE_TG']}">
-                        <label>復帰時間(秒)</label><input type="number" name="delay" value="{conf['RESTORE_DELAY']}">
+                        <label>監視するTG番号</label>
+                        <input type="number" name="watch_tg" value="{conf['WATCH_TG']}" placeholder="例: 6">
+                        <label>自動復帰するTG番号</label>
+                        <input type="number" name="restore_tg" value="{conf['RESTORE_TG']}" placeholder="例: 44833">
+                        <label>復帰までの待ち時間 (秒)</label>
+                        <input type="number" name="delay" value="{conf['RESTORE_DELAY']}">
                         <button type="submit" class="btn-blue">💾 設定を保存して反映</button>
                     </form>
                 </div>
@@ -85,24 +98,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(html.encode("utf-8"))
 
     def do_POST(self):
+        """フォームからの送信を処理し、コマンドを実行する"""
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length).decode('utf-8')
         fields = urllib.parse.parse_qs(post_data)
         
         if self.path == "/config":
-            if 'watch_tg' in fields: subprocess.run([TG_CHANGE_BIN, "-w", fields['watch_tg'][0]])
-            if 'restore_tg' in fields: subprocess.run([TG_CHANGE_BIN, "-r", fields['restore_tg'][0]])
-            if 'delay' in fields: subprocess.run([TG_CHANGE_BIN, "-t", fields['delay'][0]])
+            # 各項目を個別に保存（デーモンへの通知は最後に行う）
+            if 'watch_tg' in fields:
+                subprocess.run([TG_CHANGE_BIN, "--save-only", "-w", fields['watch_tg'][0]])
+            if 'restore_tg' in fields:
+                subprocess.run([TG_CHANGE_BIN, "--save-only", "-r", fields['restore_tg'][0]])
+            if 'delay' in fields:
+                subprocess.run([TG_CHANGE_BIN, "--save-only", "-t", fields['delay'][0]])
+            # 最後に一度だけデーモンをリロード
+            subprocess.run([TG_CHANGE_BIN, "--notify-only"])
+            
         elif self.path == "/stop":
             subprocess.run([TG_CHANGE_BIN, "-s"])
+            
         elif self.path == "/restore":
-            conf = get_config()
-            if conf['RESTORE_TG']: subprocess.run([TG_CHANGE_BIN, f"-{conf['RESTORE_TG']}"])
+            c = get_config()
+            if c['RESTORE_TG']:
+                subprocess.run([TG_CHANGE_BIN, f"-{c['RESTORE_TG']}"])
         
+        # 処理完了後、トップ画面にリダイレクト
         self.send_response(303)
         self.send_header('Location', '/')
         self.end_headers()
 
 if __name__ == "__main__":
+    # ポートの再利用を許可してサーバー起動
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", PORT), Handler) as httpd:
         httpd.serve_forever()
