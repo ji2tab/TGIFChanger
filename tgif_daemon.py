@@ -4,14 +4,14 @@
 # TGIFChanger-Py - Unified MMDVM Daemon
 # 
 # File:        tgif_daemon.py
-# Version:     v2.1.5 (EOF Buffer Fix Edition)
+# Version:     v2.2.0 (Unified System Edition)
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 # =============================================================================
 
 import os, sys, time, re, threading, subprocess, glob, urllib.request
 
-VERSION = "v2.1.5"
+VERSION = "v2.2.0"
 CONF_FILE = "/etc/tgifchanger.conf"
 MMDVM_CONF = "/etc/mmdvmhost"
 DMRGW_CONF = "/etc/dmrgateway"
@@ -139,7 +139,9 @@ class App:
                         log("🛑 復帰タイマーをキャンセルしました。")
                 elif cmd == "reload":
                     load_config()
-                    log("🔄 設定を再読み込みしました。")
+                    self.watch_tg, self.restore_tg = self.get_dynamic_tgs()
+                    log("🔄 設定を再読み込みし、反映しました。")
+                    log(f"   現在の設定 -> HOME:TG{self.restore_tg} / WATCH:TG{self.watch_tg} / DELAY:{config['RESTORE_DELAY']}s")
             except Exception as e:
                 log(f"⚠️ CMD Error: {e}")
 
