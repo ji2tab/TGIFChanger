@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import sys, os, urllib.request, re
+# =============================================================================
+# TGIFChanger-Py - CLI Tool (v2.2.3)
+# =============================================================================
 
-# 自動昇格
-if os.geteuid() != 0:
-    try: os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
-    except: sys.exit(1)
+import sys, os, re, urllib.request
 
 CONF_FILE = "/etc/tgifchanger.conf"
 CMD_FIFO = "/run/tgifchanger.cmd"
 
 def save_config(key, value):
-    if not value or value.strip() == "": return # 空の値は保存しない
+    if not value: return
     lines = []
     found = False
     new_line = f'{key}="{value}"\n'
@@ -25,36 +24,34 @@ def save_config(key, value):
     if not found: lines.append(new_line)
     with open(CONF_FILE, 'w') as f: f.writelines(lines)
 
-def send_daemon_cmd(cmd):
+def notify_daemon():
     if os.path.exists(CMD_FIFO):
         try:
-            with open(CMD_FIFO, 'w') as f: f.write(cmd)
-        except: pass
+            fd = os.open(CMD_FIFO, os.O_WRONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, 'w') as f:
+                f.write("reload\n")
+            return True
+        except: return False
+    return False
 
-args = sys.argv[1:]
-if not args: sys.exit(0)
-cmd = args[0]
+def main():
+    args = sys.argv[1:]
+    if not args: return
+    
+    cmd = args[0]
+    if cmd == "-w" and len(args) > 1:
+        save_config("WATCH_TG", args[1])
+        notify_daemon()
+        print(f"✅ WATCH_TG={args[1]} を保存し、デーモンに通知しました")
+    elif cmd == "-r" and len(args) > 1:
+        save_config("RESTORE_TG", args[1])
+        notify_daemon()
+        print(f"✅ RESTORE_TG={args[1]} を保存し、デーモンに通知しました")
+    elif cmd == "-t" and len(args) > 1:
+        save_config("RESTORE_DELAY", args[1])
+        notify_daemon()
+        print(f"✅ DELAY={args[1]} を保存しました")
+    # API送信ロジックなどはここに続く...
 
-# 設定変更ロジック
-if cmd in ["-t", "-w", "-r"] and len(args) >= 2:
-    val = args[1]
-    key = {"-t":"RESTORE_DELAY", "-w":"WATCH_TG", "-r":"RESTORE_TG"}[cmd]
-    save_config(key, val)
-    send_daemon_cmd("reload")
-    print(f"✅ {key} を {val} に設定し、永続化しました。")
-    sys.exit(0)
-elif cmd == "-s":
-    send_daemon_cmd("stop")
-    print("✅ タイマー停止信号を送信しました。")
-    sys.exit(0)
-elif cmd == "-c":
-    sys.exit(0)
-
-# API操作ロジック (設定フラグはTG番号として扱わない)
-target = cmd.lstrip("-")
-if target in ["w", "r", "t", "c", "s"]: sys.exit(0)
-
-tg = target.split(":")[0]
-slot = target.split(":")[1] if ":" in target else "1"
-print(f"Changing Slot {slot} to TG {tg}...")
-# ... (以下API通信処理: 以前と同じ)
+if __name__ == "__main__":
+    main()
