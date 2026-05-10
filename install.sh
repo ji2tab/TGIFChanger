@@ -1,17 +1,24 @@
 #!/bin/bash
 # =============================================================================
 # TGIFChanger-Py - Smart Installer & Migrator
-# Version:     v2.0.0
+# 
+# File:        install.sh
+# Version:     v2.1.0
+# Author:      Kazuhiko Shinoda (JI2TAB)
+# Description: Safely migrates from legacy shell scripts to the new Python
+#              daemon. Installs dependencies, sets up systemd services,
+#              and preserves user configurations.
+# License:     GPL v3
 # =============================================================================
 
 set -e
-VERSION="v2.0.0"
+VERSION="v2.1.0"
 OLD_DIR="/opt/tgifchanger"
 NEW_DIR="/opt/tgifchanger-py"
 RAW_URL="https://raw.githubusercontent.com/ji2tab/TGIFChanger/main"
 
 echo "=================================================="
-echo " TGIFChanger-Py (v2.0.0) Smart Installer"
+echo " TGIFChanger-Py (v2.1.0) Smart Installer"
 echo "=================================================="
 
 if command -v rpi-rw >/dev/null 2>&1; then sudo rpi-rw; fi
