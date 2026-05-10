@@ -4,14 +4,14 @@
 # TGIFChanger-Py - Unified MMDVM Daemon
 # 
 # File:        tgif_daemon.py
-# Version:     v2.1.2 (Native Pure-Python Log Tailer)
+# Version:     v2.1.5 (EOF Buffer Fix Edition)
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 # =============================================================================
 
 import os, sys, time, re, threading, subprocess, glob, urllib.request
 
-VERSION = "v2.1.2"
+VERSION = "v2.1.5"
 CONF_FILE = "/etc/tgifchanger.conf"
 MMDVM_CONF = "/etc/mmdvmhost"
 DMRGW_CONF = "/etc/dmrgateway"
@@ -183,14 +183,13 @@ class App:
 
         log(f"📁 監視開始: {os.path.basename(current_file)}")
         f = open(current_file, 'r', errors='ignore')
-        f.seek(0, 2) # ファイルの末尾に移動
+        f.seek(0, 2)
         current_ino = os.stat(current_file).st_ino
 
         try:
             while True:
                 self.process_command()
                 
-                # GPIOフェールセーフ
                 if self.gpio.state == 1 and self.gpio.high_start_time > 0:
                     if time.time() - self.gpio.high_start_time > 120:
                         log("🚨 [FAIL-SAFE] Timeout 120s. Forcing LOW.")
@@ -200,20 +199,27 @@ class App:
                 if line:
                     self.process_line(line)
                 else:
-                    # 行がない場合は少し待つ
+                    # ★ 魔法の1行: EOFフラグをリセットして、OSに新データがないか再確認させる
+                    f.seek(f.tell())
                     time.sleep(0.2)
-                    # WPSDによるログのローテーション（置き換え）を検知
+                    
+                    # ログのローテーション（切り替え）検知
                     latest = get_latest_log()
-                    if latest and latest != current_file or (latest and os.stat(latest).st_ino != current_ino):
-                        f.close()
-                        current_file = latest
-                        f = open(current_file, 'r', errors='ignore')
-                        current_ino = os.stat(current_file).st_ino
-                        log(f"🔄 ログファイル切替検知: {os.path.basename(current_file)}")
-                        f.seek(0, 2)
+                    if latest:
+                        try:
+                            new_ino = os.stat(latest).st_ino
+                            if latest != current_file or new_ino != current_ino:
+                                f.close()
+                                current_file = latest
+                                f = open(current_file, 'r', errors='ignore')
+                                current_ino = new_ino
+                                log(f"🔄 ログファイル切替検知: {os.path.basename(current_file)}")
+                                f.seek(0, 2)
+                        except FileNotFoundError:
+                            pass
         except KeyboardInterrupt:
             self.gpio.set(0)
-            f.close()
+            if f: f.close()
 
 if __name__ == "__main__":
     App().run()
