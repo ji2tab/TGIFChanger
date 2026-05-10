@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# =============================================================================
-# TGIFChanger-Py - Focused Daemon (v2.8.0)
-# =============================================================================
 import os, time, threading, re, subprocess, sys
 
-VERSION = "v2.8.0"
+VERSION = "v2.9.0"
 CONF_FILE = "/etc/tgifchanger.conf"
 LOG_DIR = "/var/log/pi-star"
 
@@ -18,14 +15,16 @@ class Config:
         self.load()
     def load(self):
         if os.path.exists(CONF_FILE):
-            with open(CONF_FILE, 'r', encoding='utf-8') as f:
-                c = f.read()
-                w = re.search(r'WATCH_TG="(\d+)"', c)
-                r = re.search(r'RESTORE_TG="(\d+)"', c)
-                d = re.search(r'RESTORE_DELAY="(\d+)"', c)
-                if w: self.watch_tg = w.group(1)
-                if r: self.restore_tg = r.group(1)
-                if d: self.delay = int(d.group(1))
+            try:
+                with open(CONF_FILE, 'r', encoding='utf-8') as f:
+                    c = f.read()
+                    w = re.search(r'WATCH_TG="(\d+)"', c)
+                    r = re.search(r'RESTORE_TG="(\d+)"', c)
+                    d = re.search(r'RESTORE_DELAY="(\d+)"', c)
+                    if w: self.watch_tg = w.group(1)
+                    if r: self.restore_tg = r.group(1)
+                    if d: self.delay = int(d.group(1))
+            except: pass
         log(f"⚙️ 設定読込: WATCH={self.watch_tg}, HOME={self.restore_tg}, DELAY={self.delay}s")
 
 cfg = Config()
@@ -39,7 +38,9 @@ def set_gpio(state):
 
 def do_restore():
     log(f"🏠 復帰実行: TG {cfg.restore_tg} へ戻ります")
-    subprocess.run(["/usr/local/bin/tg_change", f"-{cfg.restore_tg}"], check=False)
+    res = subprocess.run(["/usr/local/bin/tg_change", f"-{cfg.restore_tg}"], capture_output=True, text=True)
+    if res.stdout:
+        for l in res.stdout.splitlines(): log(l)
 
 def get_latest_log():
     try:
@@ -48,9 +49,10 @@ def get_latest_log():
     except: return None
 
 def main_loop():
-    log(f"🚀 TGIFChanger Daemon {VERSION} 監視開始 (Focused)")
+    log(f"🚀 TGIFChanger Daemon {VERSION} 監視開始")
     current_log = get_latest_log()
     if not current_log: return
+    
     with open(current_log, "r", errors="ignore") as f:
         f.seek(0, 2)
         active_tg = None
@@ -58,24 +60,27 @@ def main_loop():
             line = f.readline()
             if not line:
                 if get_latest_log() != current_log: break
-                time.sleep(0.1); continue
+                time.sleep(0.05); continue
             
+            # --- 受信検知ロジック (Busyランプ連動) ---
             if "voice header" in line.lower() and "to tg" in line.lower():
                 m = re.search(r'to TG\s+(\d+)', line, re.I)
                 if m:
                     active_tg = m.group(1)
-                    if active_tg != cfg.watch_tg:
-                        log(f"⚡ 信号検知: TG {active_tg} (LED点灯)")
-                        set_gpio(True)
-                    else:
-                        log(f"💤 監視TG受信: TG {active_tg}")
+                    log(f"⚡ 信号検知: TG {active_tg}")
+                    set_gpio(True) # どんなTGでも信号があれば点灯
+                    
                     global restore_timer
                     if restore_timer: restore_timer.cancel()
 
+            # --- 信号終了ロジック ---
             if "end of voice" in line.lower() or "end of transmission" in line.lower():
-                set_gpio(False)
+                log(f"🌑 信号終了 (TG {active_tg if active_tg else '??'})")
+                set_gpio(False) # 信号が切れたら消灯
+                
+                # 監視TG以外なら復帰タイマーを始動
                 if active_tg and active_tg != cfg.watch_tg:
-                    log(f"⏳ 復帰タイマー始動: {cfg.delay}s")
+                    log(f"⏳ 復帰タイマー始動: {cfg.delay}s後に TG {cfg.restore_tg} へ戻ります")
                     if restore_timer: restore_timer.cancel()
                     restore_timer = threading.Timer(cfg.delay, do_restore)
                     restore_timer.start()
