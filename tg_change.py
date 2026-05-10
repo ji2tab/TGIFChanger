@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# =============================================================================
+# TGIFChanger-Py - TGIF Talk Group Changer API Bridge
+# 
+# File:        tg_change.py
+# Version:     v2.1.0
+# Author:      Kazuhiko Shinoda (JI2TAB)
+# Description: CLI tool to interact with TGIF API and the TGIFChanger daemon.
+#              Supports instant TG switching, timer cancellation (-s),
+#              and dynamic restore delay configuration (-t).
+# License:     GPL v3
+# =============================================================================
+
 import sys, os, urllib.request
 
 CONF_FILE = "/etc/tgifchanger.conf"
@@ -51,4 +63,4 @@ if args[0] == "-t":
     print(f"✅ 復帰時間を {sec} 秒に設定し、永続化しました。")
     sys.exit(0)
 
-# (通常のTG変更ロジック...)
+# API通信ロジック (略)
