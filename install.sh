@@ -3,16 +3,16 @@
 # TGIFChanger-Py - Smart Installer & Migrator
 # 
 # File:        install.sh
-# Version:     v2.1.6 (Fast-Install Edition)
+# Version:     v2.1.7 (Boot Delay Edition)
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # Description: Safely migrates from legacy shell scripts to the new Python
-#              daemon. Installs dependencies, sets up systemd services,
-#              and preserves user configurations.
+#              daemon. Installs dependencies, sets up systemd services
+#              with a 20-second boot delay to prevent hardware conflicts.
 # License:     GPL v3
 # =============================================================================
 
 set -e
-VERSION="v2.1.6"
+VERSION="v2.1.7"
 OLD_DIR="/opt/tgifchanger"
 NEW_DIR="/opt/tgifchanger-py"
 RAW_URL="https://raw.githubusercontent.com/ji2tab/TGIFChanger/main"
@@ -30,16 +30,14 @@ sudo systemctl disable log_monitor auto_tg_restore 2>/dev/null || true
 sudo rm -f /etc/systemd/system/log_monitor.service /etc/systemd/system/auto_tg_restore.service
 sudo rm -rf "$OLD_DIR"
 
-# =====================================================================
-# 2. Python依存関係の確認 (★超高速化アップデート)
-# =====================================================================
+# 2. Python依存関係の確認 (超高速化対応)
 echo "📦 Python環境を確認中..."
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "   -> Python3が見つかりません。インターネットからインストールします (少し時間がかかります)..."
+    echo "   -> Python3が見つかりません。インターネットからインストールします..."
     sudo apt-get update -yq || true
     sudo apt-get install -yq python3 || true
 else
-    echo "   -> ✅ Python3 は既にインストールされています (ダウンロードをスキップします)"
+    echo "   -> ✅ Python3 は既にインストールされています"
 fi
 
 # 3. 新しいディレクトリへのインストール
@@ -58,19 +56,22 @@ if [ ! -f "/etc/tgifchanger.conf" ]; then
     sudo curl -H 'Cache-Control: no-cache' -fsSL -o "/etc/tgifchanger.conf" "${RAW_URL}/tgifchanger.conf"
 fi
 
+# =====================================================================
 # 4. 新しい単一サービス (tgifchanger-py.service) の登録
-echo "⚙️  systemd ユニットを構成中..."
+# ★ 起動時のハードウェア衝突を防ぐため、20秒の遅延起動(Boot Delay)を設定
+# =====================================================================
+echo "⚙️  systemd ユニットを構成中 (Boot Delay: 20s)..."
 sudo tee /etc/systemd/system/tgifchanger-py.service >/dev/null <<EOF
 [Unit]
 Description=TGIFChanger-Py Unified Daemon
-After=mmdvmhost.service
-Wants=mmdvmhost.service
+After=mmdvmhost.service dmrgateway.service network-online.target
 
 [Service]
 Type=simple
+ExecStartPre=/bin/sleep 20
 ExecStart=/usr/bin/python3 ${NEW_DIR}/tgif_daemon.py
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=10
 User=root
 StandardOutput=journal
 StandardError=journal
@@ -84,7 +85,7 @@ sudo systemctl enable tgifchanger-py
 sudo systemctl start tgifchanger-py
 
 echo "=================================================="
-echo " ✅ Python Edition Migration Completed!"
+echo " ✅ Python Edition Installation Completed!"
 echo "--------------------------------------------------"
 echo " ログ確認コマンド:"
 echo "    journalctl -u tgifchanger-py -f"
