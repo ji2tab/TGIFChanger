@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # =============================================================================
-# TGIFChanger-Py - Unified Daemon (v2.6.4)
+# TGIFChanger-Py - Professional Unified Daemon (v2.6.4)
 # 
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
-# Description: Real-time MMDVMHost log monitor with GPIO control and 
-#              unbuffered FIFO command synchronization for Web UI.
+# Description: This daemon monitors MMDVMHost logs in real-time to detect 
+#              DMR traffic. It controls GPIO LEDs for status indication and 
+#              manages an auto-restore timer to return the hotspot to a 
+#              home Talkgroup. Supports real-time config reloads via FIFO.
 # =============================================================================
 
 import os
@@ -16,18 +18,18 @@ import re
 import subprocess
 import sys
 
-# --- 定数定義 ---
+# --- システム定数 ---
 VERSION = "v2.6.4"
 CONF_FILE = "/etc/tgifchanger.conf"
 CMD_FIFO = "/run/tgifchanger.cmd"
 LOG_DIR = "/var/log/pi-star"
 
 def log(msg):
-    """標準出力にバッファなしで即座にログを書き出す"""
+    """標準出力(journalctl)へ即座に内容を書き出すためのラッパー"""
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 class Config:
-    """設定ファイルの読み込みと保持を担当するクラス"""
+    """設定ファイルの読み込みと動的更新を管理するクラス"""
     def __init__(self):
         self.watch_tg = "6"
         self.restore_tg = "44833"
@@ -36,44 +38,50 @@ class Config:
         self.load()
 
     def load(self):
+        """/etc/tgifchanger.conf から最新の設定をパースする"""
         if os.path.exists(CONF_FILE):
-            with open(CONF_FILE, 'r') as f:
-                content = f.read()
-                w = re.search(r'^\s*WATCH_TG\s*=\s*["\']?(\d+)["\']?', content, re.M)
-                r = re.search(r'^\s*RESTORE_TG\s*=\s*["\']?(\d+)["\']?', content, re.M)
-                d = re.search(r'^\s*RESTORE_DELAY\s*=\s*["\']?(\d+)["\']?', content, re.M)
-                g = re.search(r'^\s*GPIO_PIN\s*=\s*["\']?(\d+)["\']?', content, re.M)
-                
-                if w: self.watch_tg = w.group(1)
-                if r: self.restore_tg = r.group(1)
-                if d: self.delay = int(d.group(1))
-                if g: self.gpio_pin = g.group(1)
+            try:
+                with open(CONF_FILE, 'r') as f:
+                    content = f.read()
+                    # 正規表現で各設定値を抽出（コメントアウトされている行は無視）
+                    w = re.search(r'^\s*WATCH_TG\s*=\s*["\']?(\d+)["\']?', content, re.M)
+                    r = re.search(r'^\s*RESTORE_TG\s*=\s*["\']?(\d+)["\']?', content, re.M)
+                    d = re.search(r'^\s*RESTORE_DELAY\s*=\s*["\']?(\d+)["\']?', content, re.M)
+                    g = re.search(r'^\s*GPIO_PIN\s*=\s*["\']?(\d+)["\']?', content, re.M)
+                    
+                    if w: self.watch_tg = w.group(1)
+                    if r: self.restore_tg = r.group(1)
+                    if d: self.delay = int(d.group(1))
+                    if g: self.gpio_pin = g.group(1)
+            except Exception as e:
+                log(f"⚠️ 設定読み込みエラー: {e}")
         
-        log(f"⚙️  設定を反映しました: WATCH={self.watch_tg}, HOME={self.restore_tg}, DELAY={self.delay}s")
+        log(f"⚙️  設定を反映: WATCH={self.watch_tg}, HOME={self.restore_tg}, DELAY={self.delay}s")
 
-# グローバルインスタンス
+# グローバル設定インスタンスとタイマー
 cfg = Config()
 restore_timer = None
 
 def set_gpio(state):
-    """GPIOの出力を制御 (pinctrlコマンドを使用)"""
+    """GPIOの出力を制御してLEDを点灯/消灯させる"""
     try:
+        # dh (Digital High), dl (Digital Low)
         mode = "dh" if state else "dl"
-        # check=Falseでコマンド自体の失敗でデーモンを落とさないようにする
         subprocess.run(["pinctrl", "set", cfg.gpio_pin, "op", mode], check=False, capture_output=True)
-    except Exception as e:
+    except Exception:
         pass
 
 def do_restore():
-    """指定されたTGへ戻るコマンドを実行"""
-    log(f"🏠 自動復帰実行: TG {cfg.restore_tg} へ接続します。")
+    """復帰用Talkgroupへの切替APIを実行する"""
+    log(f"🏠 自動復帰時間経過: TG {cfg.restore_tg} へ戻ります。")
     try:
+        # tg_change ツールを介してAPIリクエストを送信
         subprocess.run(["/usr/local/bin/tg_change", f"-{cfg.restore_tg}"], check=False)
     except Exception as e:
-        log(f"❌ 復帰コマンド失敗: {e}")
+        log(f"❌ 復帰コマンド実行失敗: {e}")
 
 def command_listener():
-    """Web UIやCLIからの非同期命令(FIFO)を待ち受けるスレッド"""
+    """Web UIやCLIツールからの命令を非同期に待ち受けるパイプ(FIFO)リスナー"""
     if os.path.exists(CMD_FIFO):
         os.remove(CMD_FIFO)
     
@@ -81,11 +89,12 @@ def command_listener():
         os.mkfifo(CMD_FIFO)
         os.chmod(CMD_FIFO, 0o666)
     except Exception as e:
-        log(f"❌ FIFO作成失敗: {e}")
+        log(f"❌ FIFO作成に失敗しました。Web連動ができません: {e}")
         return
 
     while True:
         try:
+            # パイプが開かれるのを待機
             with open(CMD_FIFO, 'r') as fifo:
                 for line in fifo:
                     cmd = line.strip()
@@ -95,24 +104,24 @@ def command_listener():
                         global restore_timer
                         if restore_timer and restore_timer.is_alive():
                             restore_timer.cancel()
-                            log("🛑 タイマーを強制停止しました。")
-        except Exception as e:
+                            log("🛑 ユーザー操作により復帰タイマーを停止しました。")
+        except Exception:
             time.sleep(1)
 
 def get_latest_log():
-    """MMDVMHostの最新ログファイルパスを取得"""
+    """最新のMMDVMHostログファイル名を取得する"""
     try:
         files = [f for f in os.listdir(LOG_DIR) if f.startswith("MMDVM-")]
         if not files: return None
         return os.path.join(LOG_DIR, max(files))
-    except:
+    except Exception:
         return None
 
 def main_loop():
-    """メインのログ監視ループ"""
-    log(f"🚀 TGIFChanger-Py {VERSION} 起動完了")
+    """ログファイルを監視し、DMRの挙動に応じて処理を行うメインループ"""
+    log(f"🚀 TGIFChanger-Py {VERSION} 監視開始")
     
-    # 命令受信用スレッドをデーモンとして開始
+    # 別スレッドでコマンドリスナーを起動
     threading.Thread(target=command_listener, daemon=True).start()
     
     current_log = get_latest_log()
@@ -120,11 +129,13 @@ def main_loop():
         log("❌ 監視対象のログファイルが見つかりません。")
         return
 
-    log(f"📁 監視ログ: {os.path.basename(current_log)}")
+    log(f"📁 監視中のログ: {os.path.basename(current_log)}")
 
     with open(current_log, "r") as f:
-        # 起動時点までの過去ログは無視して末尾から開始
+        # 起動時の古いログは読み飛ばし、現在の末尾から監視
         f.seek(0, 2)
+        
+        active_tg = None
         
         while True:
             line = f.readline()
@@ -132,7 +143,7 @@ def main_loop():
                 time.sleep(0.1)
                 continue
             
-            # 受信開始(Header)の検知
+            # --- 受信開始検知 (Voice Header) ---
             if "received network voice header" in line:
                 m = re.search(r'to TG (\d+)', line)
                 if m:
@@ -140,19 +151,19 @@ def main_loop():
                     log(f"⚡ 受信開始: TG {active_tg}")
                     set_gpio(True)
                     
-                    # 受信中は復帰タイマーを止める
+                    # 受信が始まったら既存の復帰タイマーは破棄
                     global restore_timer
                     if restore_timer and restore_timer.is_alive():
                         restore_timer.cancel()
             
-            # 受信終了(End of Voice)の検知
+            # --- 受信終了検知 (End of Voice) ---
             if "received network end of voice" in line:
                 log("🌑 受信終了 / 待機状態")
                 set_gpio(False)
                 
-                # 監視TG以外（ゲストTG）での交信が終わった場合のみタイマー開始
-                if 'active_tg' in locals() and active_tg != cfg.watch_tg:
-                    log(f"⏳ 復帰タイマー開始: {cfg.delay}秒後に TG {cfg.restore_tg} へ戻ります")
+                # 受信していたTGが、監視対象(WATCH_TG)以外の「ゲストTG」だった場合のみ復帰タイマーを始動
+                if active_tg and active_tg != cfg.watch_tg:
+                    log(f"⏳ 復帰タイマー開始: {cfg.delay}秒後に TG {cfg.restore_tg} へ自動復帰します。")
                     if restore_timer and restore_timer.is_alive():
                         restore_timer.cancel()
                     restore_timer = threading.Timer(cfg.delay, do_restore)
@@ -162,8 +173,8 @@ if __name__ == "__main__":
     try:
         main_loop()
     except KeyboardInterrupt:
-        log("👋 ユーザー操作により終了します。")
+        log("👋 プログラムを終了します。")
         sys.exit(0)
     except Exception as e:
-        log(f"🔥 重大なエラーが発生しました: {e}")
+        log(f"🔥 システムエラーが発生しました: {e}")
         sys.exit(1)
