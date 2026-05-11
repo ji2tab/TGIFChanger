@@ -10,9 +10,9 @@
 # Changes from v2.3.0:
 #   - DMRGateway / MMDVMHost の TGRewrite ルールを自動スキャンし、
 #     対話型プロンプトのデフォルト値として動的にサジェストする機能を追加
-#   - TGRewrite抽出時に複数行が結合されるバグ(例: 66, 4483344833)を修正
-#   - 確実に一番最初の TGRewrite 値のみを採用するようロジックを堅牢化
+#   - TGRewrite抽出時に複数行が結合されるバグを修正
 #   - ベースの復帰デフォルト値を 168 から 4000 (Disconnect) へ変更
+#   - [FIX] パイプ実行時における Pi-Star rpi-rw の完全回避ロジックを実装
 # =============================================================================
 
 set -euo pipefail
@@ -33,7 +33,18 @@ if [[ "${EUID}" -ne 0 ]]; then
     exit 1
 fi
 
-if command -v rpi-rw >/dev/null 2>&1; then rpi-rw || true; fi
+# ------------------------------------------------------------------
+# 0. Pi-Star Read-Only 完全回避
+# ------------------------------------------------------------------
+echo "🔓 ファイルシステムを書き込み可能モードに変更しています..."
+if [ -x /usr/local/sbin/rpi-rw ]; then
+    /usr/local/sbin/rpi-rw || true
+elif command -v rpi-rw >/dev/null 2>&1; then
+    rpi-rw || true
+else
+    mount -o remount,rw / 2>/dev/null || true
+    mount -o remount,rw /boot 2>/dev/null || true
+fi
 
 # ------------------------------------------------------------------
 # 1. 旧バージョンのクリーンアップ
