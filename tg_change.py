@@ -4,16 +4,12 @@
 # TGIFChanger-Py - TGIF Talk Group Changer CLI
 #
 # File:        tg_change.py
-# Version:     v2.3.0
+# Version:     v2.3.1
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 #
-# Changes from v2.2.0:
-#   - Auto-sudo削除 (sudo への自動昇格はセキュリティリスク)
-#   - FIFO → Unix domain socket でデーモン通信
-#   - --status コマンド追加 (デーモンの状態をJSON表示)
-#   - -s/--stop を --cancel に改名 (意味を明確化) ※-s は後方互換で維持
-#   - 設定書き込みに root チェックを追加 (Auto-sudo 廃止に伴う代替案内)
+# Changes from v2.3.0:
+#   - デフォルト表示を -168 から -4000 へ変更
 # =============================================================================
 
 import sys, os, re, socket, json, urllib.request, urllib.error
@@ -25,12 +21,7 @@ DMRGW_CONF = "/etc/dmrgateway"
 MMDVM_CONF = "/etc/mmdvmhost"
 
 
-# ---------------------------------------------------------------------------
-# ヘルパー
-# ---------------------------------------------------------------------------
-
 def _send_cmd(cmd: str) -> str:
-    """デーモンにコマンドを送り、応答文字列を返す。"""
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.settimeout(3.0)
@@ -53,8 +44,7 @@ def _load_conf() -> dict:
     result = {}
     if not os.path.isfile(CONF_FILE):
         return result
-    for line in Path(CONF_FILE).read_text(encoding="utf-8",
-                                          errors="ignore").splitlines():
+    for line in Path(CONF_FILE).read_text(encoding="utf-8", errors="ignore").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -64,15 +54,13 @@ def _load_conf() -> dict:
 
 
 def _save_conf(key: str, value: str) -> None:
-    """設定ファイルの KEY= 行を更新する。root権限が必要。"""
     if os.geteuid() != 0:
         print(f"❌ エラー: 設定変更には root 権限が必要です。")
         print(f"   sudo tg_change {' '.join(sys.argv[1:])} を実行してください。")
         sys.exit(1)
     lines, found = [], False
     if os.path.isfile(CONF_FILE):
-        for line in Path(CONF_FILE).read_text(encoding="utf-8",
-                                              errors="ignore").splitlines(keepends=True):
+        for line in Path(CONF_FILE).read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True):
             if re.match(rf"^\s*{re.escape(key)}\s*=", line):
                 lines.append(f'{key}="{value}"\n')
                 found = True
@@ -91,8 +79,7 @@ def _iter_sections(path: str):
     if not os.path.isfile(path):
         return
     current, buf = "", []
-    for raw in Path(path).read_text(encoding="utf-8",
-                                    errors="replace").splitlines():
+    for raw in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
         m = re.match(r"^\[(.+?)\]\s*$", raw)
         if m:
             yield current, buf
@@ -132,16 +119,11 @@ def _get_dmr_id() -> str:
     return ""
 
 
-# ---------------------------------------------------------------------------
-# サブコマンド
-# ---------------------------------------------------------------------------
-
 def cmd_show_config() -> None:
     print("⚙️  現在の TGIFChanger 設定:")
     print("-" * 40)
     if os.path.isfile(CONF_FILE):
-        for line in Path(CONF_FILE).read_text(encoding="utf-8",
-                                              errors="ignore").splitlines():
+        for line in Path(CONF_FILE).read_text(encoding="utf-8", errors="ignore").splitlines():
             stripped = line.strip()
             if stripped and not stripped.startswith("#") and "=" in stripped:
                 print(f"  {stripped}")
@@ -187,7 +169,6 @@ def cmd_set_conf(key: str, value: str, label: str) -> int:
 
 
 def cmd_change_tg(arg: str) -> int:
-    """-<TG>[:<SLOT>] 形式のTG変更。"""
     target = arg.lstrip("-")
     if ":" in target:
         tg, slot_str = target.split(":", 1)
@@ -203,8 +184,7 @@ def cmd_change_tg(arg: str) -> int:
         return 1
 
     conf  = _load_conf()
-    api   = conf.get("TGIF_API",
-                     "http://tgif.network:5040/api/sessions/update").rstrip("/")
+    api   = conf.get("TGIF_API", "http://tgif.network:5040/api/sessions/update").rstrip("/")
     tout  = int(conf.get("TGIF_API_TIMEOUT", "10"))
     dmr_id = _get_dmr_id()
     if not dmr_id:
@@ -233,17 +213,13 @@ def cmd_change_tg(arg: str) -> int:
         return 1
 
 
-# ---------------------------------------------------------------------------
-# ヘルプ
-# ---------------------------------------------------------------------------
-
 def show_help() -> None:
-    print("TGIFChanger CLI v2.3.0\n")
+    print("TGIFChanger CLI v2.3.1\n")
     print("使用方法:")
     print("  【API操作 (即時変更)】")
     print("  tg_change -<TG>[:<Slot>]  現在の接続先TGを即座に変更")
-    print("  tg_change -168            スロット1 を TG168 に変更")
-    print("  tg_change -168:2          スロット2 を TG168 に変更")
+    print("  tg_change -4000           スロット1 を TG4000 に変更")
+    print("  tg_change -4000:2         スロット2 を TG4000 に変更")
     print()
     print("  【デーモン操作】")
     print("  tg_change -s / --cancel   動作中の復帰タイマーを停止")
@@ -257,10 +233,6 @@ def show_help() -> None:
     print()
     print("  -h / --help               このヘルプを表示")
 
-
-# ---------------------------------------------------------------------------
-# エントリポイント
-# ---------------------------------------------------------------------------
 
 def main() -> int:
     args = sys.argv[1:]
@@ -293,7 +265,6 @@ def main() -> int:
         if cmd == "-r":
             return cmd_set_conf("RESTORE_TG", val, f"復帰TG {val}")
 
-    # -<TG>[:<SLOT>] 形式
     if re.match(r"^-\d+(:\d+)?$", cmd):
         return cmd_change_tg(cmd)
 
