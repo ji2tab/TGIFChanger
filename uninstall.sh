@@ -1,40 +1,72 @@
 #!/bin/bash
 # =============================================================================
-# TGIFChanger-Py - Focused Uninstaller (v2.8.0)
-# 
+# TGIFChanger-Py - Uninstaller
+#
+# File:        uninstall.sh
+# Version:     v2.3.1
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
-# Description: Minimalist removal script for the focused daemon system.
+#
+# Description: TGIFChanger のすべてのプログラム、サービス、および
+#              設定ファイル (tgifchanger.conf) を完全に削除します。
 # =============================================================================
 
-echo "=================================================="
-echo " 🗑️  TGIFChanger-Py (Focused) を削除します"
-echo "=================================================="
+set -euo pipefail
 
-# Pi-Starを書き込み可能モードへ
-if command -v rpi-rw >/dev/null 2>&1; then
-    sudo rpi-rw
+echo "=================================================="
+echo " TGIFChanger-Py Uninstaller"
+echo "=================================================="
+echo "⚠️  警告:"
+echo "この操作は TGIFChanger のすべてのプログラムと"
+echo "設定ファイル (/etc/tgifchanger.conf) を完全に削除します。"
+echo ""
+
+# root権限の確認
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "❌ root権限で実行してください: sudo bash $0"
+    exit 1
 fi
 
-# 1. サービスの停止と無効化
-echo "🛑 サービスを停止中..."
-sudo systemctl stop tgifchanger-py 2>/dev/null || true
-sudo systemctl disable tgifchanger-py 2>/dev/null || true
+echo "⏳ 5秒後にアンインストールを開始します... (キャンセルは Ctrl+C)"
+sleep 5
 
-# 2. ユニットファイルの物理削除
-echo "📄 サービス定義ファイルを削除中..."
-sudo rm -f /etc/systemd/system/tgifchanger-py.service
-sudo systemctl daemon-reload
+# Pi-Star環境での読み取り専用ファイルシステム回避
+if command -v rpi-rw >/dev/null 2>&1; then 
+    echo "🔓 ファイルシステムを書き込み可能モード(rpi-rw)に変更しています..."
+    rpi-rw || true
+fi
 
-# 3. 実行ファイル・リンク・ディレクトリの削除
-echo "📁 プログラム本体を削除中..."
-sudo rm -f /usr/local/bin/tg_change
-sudo rm -rf /opt/tgifchanger-py
+# 1. サービスの停止と無効化 (新旧すべてのサービスを対象)
+echo "🛑 サービスと関連プロセスを強制停止しています..."
+for svc in log_monitor auto_tg_restore tgifchanger-py; do
+    systemctl stop    "$svc" 2>/dev/null || true
+    systemctl disable "$svc" 2>/dev/null || true
+done
 
-# 4. 設定ファイルの扱い
-echo "📝 設定ファイル (/etc/tgifchanger.conf) は保持しました。"
-echo "   (これも消す場合は sudo rm /etc/tgifchanger.conf を実行してください)"
+# 2. systemd サービスファイルの削除
+echo "🗑️  systemd サービス定義を削除しています..."
+rm -f /etc/systemd/system/log_monitor.service \
+      /etc/systemd/system/auto_tg_restore.service \
+      /etc/systemd/system/tgifchanger-py.service
+
+systemctl daemon-reload
+
+# 3. プログラム本体ディレクトリとコマンドの削除
+echo "🗑️  プログラム本体とシンボリックリンクを削除しています..."
+rm -rf /opt/tgifchanger /opt/tgifchanger-py
+rm -f /usr/local/bin/tg_change
+
+# 4. 一時ファイル(ソケット、ロックファイル等)の削除
+echo "🗑️  一時ファイルを削除しています..."
+rm -f /run/tgifchanger-py.sock \
+      /run/tgifchanger-py.lock \
+      /run/tgifchanger.cmd \
+      /run/auto_tg_restore.pid
+
+# 5. 設定ファイルの完全削除
+echo "🗑️  設定ファイルを完全に削除しています..."
+rm -f /etc/tgifchanger.conf /etc/tgifchanger.conf.new
 
 echo "=================================================="
-echo " ✨ 削除完了。システムはクリーンになりました。"
+echo " ✅ TGIFChanger-Py のアンインストールが完了しました。"
 echo "=================================================="
