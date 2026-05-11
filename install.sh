@@ -13,7 +13,7 @@
 #   - Type=notify → Type=simple (sd_notify未実装のため)
 #   - 旧 v2.x (tgifchanger-py) と旧 proto (log_monitor/auto_tg_restore) の
 #     両方を削除するクリーンアップを維持
-#   - [FIX] _write_example_conf の呼び出しをヒアドキュメントでの生成に修正
+#   - [NEW] 究極の設定ファイル（テンプレート）の完全組み込み
 # =============================================================================
 
 set -euo pipefail
@@ -95,13 +95,21 @@ ln -sf "${INSTALL_DIR}/tg_change.py" "${SYMLINK}"
 echo "🔗 シンボリックリンク: ${SYMLINK}"
 
 # ------------------------------------------------------------------
-# 4. 設定ファイル
+# 4. 設定ファイル (究極のテンプレート生成)
 # ------------------------------------------------------------------
 if [[ -f "${CONF_FILE}" ]]; then
     echo "📝 既存 ${CONF_FILE} を保持します。"
     echo "   新オプションの確認用テンプレートを ${CONF_FILE}.new に保存:"
     cat > "${CONF_FILE}.new" <<'EOF'
-# TGIFChanger 設定ファイル (テンプレート)
+# TGIFChanger 設定ファイル (v2.3.0)
+#
+# Bash KEY=VALUE 形式。両方の環境で読み込み可能:
+#   sudo bash install.sh     (インストール)
+#   tg_change --status       (ステータス確認)
+#   sudo tg_change -w 168    (設定変更)
+#
+# 設定変更後: sudo systemctl restart tgifchanger-py
+
 LOG_DIR="/var/log/pi-star"
 WATCH_SLOT="2"
 RESTORE_SLOT="2"
@@ -109,15 +117,51 @@ WATCH_TG="1"
 RESTORE_TG="168"
 RESTORE_DELAY="120"
 GPIO_PIN="17"
-GPIO_CHIP="auto"
+
+# --- GPIO Backend (ハイブリッド対応) ---
+# 
+# GPIO_BACKEND:
+#   "auto"     (デフォルト)
+#              → pinctrl / raspi-gpio / sysfs を順に試す
+#              → Pi-Star(Buster) on Pi Zero 2W で動作実績あり
+#   "libgpiod"
+#              → libgpiod v1/v2 を使用
+#              → Bookworm / Pi5 環境に推奨 (仕様書§6)
+#              → gpiodetect で gpiochip を自動判定
+#   "pinctrl", "raspi-gpio", "sysfs", "null"
+#              → 強制指定
+#
 GPIO_BACKEND="auto"
+
+# GPIO_CHIP (libgpiod使用時のみ有効):
+#   "auto"     (デフォルト) → gpiodetect で BCM チップを探す
+#                            Pi4以前: gpiochip0
+#                            Pi5:    gpiochip4
+#   "0", "4"   → explicit chip number
+#   "gpiochip0", "gpiochip4" → chip name
+#
+GPIO_CHIP="auto"
+
+# --- TGIF API ---
 TGIF_API="http://tgif.network:5040/api/sessions/update"
 TGIF_API_TIMEOUT="10"
+
+# --- ファイルパス ---
+MMDVM_CONF="/etc/mmdvmhost"
+DMRGATEWAY_CONF="/etc/dmrgateway"
 EOF
 else
     echo "📝 設定ファイルを新規作成: ${CONF_FILE}"
     cat > "${CONF_FILE}" <<'EOF'
-# TGIFChanger 設定ファイル
+# TGIFChanger 設定ファイル (v2.3.0)
+#
+# Bash KEY=VALUE 形式。両方の環境で読み込み可能:
+#   sudo bash install.sh     (インストール)
+#   tg_change --status       (ステータス確認)
+#   sudo tg_change -w 168    (設定変更)
+#
+# 設定変更後: sudo systemctl restart tgifchanger-py
+
 LOG_DIR="/var/log/pi-star"
 WATCH_SLOT="2"
 RESTORE_SLOT="2"
@@ -125,10 +169,38 @@ WATCH_TG="1"
 RESTORE_TG="168"
 RESTORE_DELAY="120"
 GPIO_PIN="17"
-GPIO_CHIP="auto"
+
+# --- GPIO Backend (ハイブリッド対応) ---
+# 
+# GPIO_BACKEND:
+#   "auto"     (デフォルト)
+#              → pinctrl / raspi-gpio / sysfs を順に試す
+#              → Pi-Star(Buster) on Pi Zero 2W で動作実績あり
+#   "libgpiod"
+#              → libgpiod v1/v2 を使用
+#              → Bookworm / Pi5 環境に推奨 (仕様書§6)
+#              → gpiodetect で gpiochip を自動判定
+#   "pinctrl", "raspi-gpio", "sysfs", "null"
+#              → 強制指定
+#
 GPIO_BACKEND="auto"
+
+# GPIO_CHIP (libgpiod使用時のみ有効):
+#   "auto"     (デフォルト) → gpiodetect で BCM チップを探す
+#                            Pi4以前: gpiochip0
+#                            Pi5:    gpiochip4
+#   "0", "4"   → explicit chip number
+#   "gpiochip0", "gpiochip4" → chip name
+#
+GPIO_CHIP="auto"
+
+# --- TGIF API ---
 TGIF_API="http://tgif.network:5040/api/sessions/update"
 TGIF_API_TIMEOUT="10"
+
+# --- ファイルパス ---
+MMDVM_CONF="/etc/mmdvmhost"
+DMRGATEWAY_CONF="/etc/dmrgateway"
 EOF
     chmod 644 "${CONF_FILE}"
 fi
