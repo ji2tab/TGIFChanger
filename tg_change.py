@@ -8,7 +8,7 @@
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 #
-# Changes from v2.2.0 (Gemini):
+# Changes from v2.2.0:
 #   - Auto-sudo削除 (sudo への自動昇格はセキュリティリスク)
 #   - FIFO → Unix domain socket でデーモン通信
 #   - --status コマンド追加 (デーモンの状態をJSON表示)
