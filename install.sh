@@ -10,6 +10,8 @@
 # Changes from v2.3.0:
 #   - DMRGateway / MMDVMHost の TGRewrite ルールを自動スキャンし、
 #     対話型プロンプトのデフォルト値として動的にサジェストする機能を追加
+#   - TGRewrite抽出時に複数行が結合されるバグ(例: 66, 4483344833)を修正
+#   - 確実に一番最初の TGRewrite 値のみを採用するようロジックを堅牢化
 #   - ベースの復帰デフォルト値を 168 から 4000 (Disconnect) へ変更
 # =============================================================================
 
@@ -90,25 +92,35 @@ echo "🔗 シンボリックリンク: ${SYMLINK}"
 DETECTED_WATCH="1"
 DETECTED_RESTORE="4000"
 
-# ブロック解析で TGRewrite を安全に抽出するawkスクリプト
+# ブロック解析で "一番最初に見つけた" TGRewrite のみを抽出する堅牢なawkスクリプト
 EXTRACT_AWK='
-    /^\[/ {
-        if (is_tgif && rewrite != "") { print rewrite; exit }
-        is_tgif=0; rewrite=""
+BEGIN { in_dmr=0; is_tgif=0; rewrite="" }
+/^\[DMR Network/ { 
+    if (in_dmr && is_tgif && rewrite != "") { print rewrite; exit }
+    in_dmr=1; is_tgif=0; rewrite=""; next 
+}
+/^\[/ {
+    if (in_dmr && is_tgif && rewrite != "") { print rewrite; exit }
+    in_dmr=0
+}
+in_dmr && /Address=tgif\.network/ { is_tgif=1 }
+in_dmr && /^TGRewrite[0-9]*=/ {
+    if (rewrite == "") {
+        split($0, a, "=")
+        rewrite = a[2]
     }
-    /Address=tgif\.network/ { is_tgif=1 }
-    /^TGRewrite[0-9]*=/ && rewrite=="" { split($0,a,"="); rewrite=a[2] }
-    END { if (is_tgif && rewrite != "") print rewrite }
+}
+END { if (in_dmr && is_tgif && rewrite != "") print rewrite }
 '
 
 if [ -f "/etc/dmrgateway" ]; then
-    REWRITE_RULE=$(awk "$EXTRACT_AWK" /etc/dmrgateway 2>/dev/null || true)
+    REWRITE_RULE=$(awk "$EXTRACT_AWK" /etc/dmrgateway 2>/dev/null | head -n 1 || true)
     if [ -n "$REWRITE_RULE" ]; then
         DETECTED_WATCH=$(echo "$REWRITE_RULE" | cut -d',' -f2 | tr -dc '0-9')
         DETECTED_RESTORE=$(echo "$REWRITE_RULE" | cut -d',' -f4 | tr -dc '0-9')
     fi
 elif [ -f "/etc/mmdvmhost" ]; then
-    REWRITE_RULE=$(awk "$EXTRACT_AWK" /etc/mmdvmhost 2>/dev/null || true)
+    REWRITE_RULE=$(awk "$EXTRACT_AWK" /etc/mmdvmhost 2>/dev/null | head -n 1 || true)
     if [ -n "$REWRITE_RULE" ]; then
         DETECTED_WATCH=$(echo "$REWRITE_RULE" | cut -d',' -f2 | tr -dc '0-9')
         DETECTED_RESTORE=$(echo "$REWRITE_RULE" | cut -d',' -f4 | tr -dc '0-9')
@@ -117,7 +129,6 @@ fi
 
 [ -z "$DETECTED_WATCH" ] && DETECTED_WATCH="1"
 [ -z "$DETECTED_RESTORE" ] && DETECTED_RESTORE="4000"
-
 
 # ------------------------------------------------------------------
 # 5. 設定ファイル (対話型テンプレート生成)
