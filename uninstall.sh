@@ -30,10 +30,15 @@ fi
 echo "⏳ 5秒後にアンインストールを開始します... (キャンセルは Ctrl+C)"
 sleep 5
 
-# Pi-Star環境での読み取り専用ファイルシステム回避
-if command -v rpi-rw >/dev/null 2>&1; then 
-    echo "🔓 ファイルシステムを書き込み可能モード(rpi-rw)に変更しています..."
+# Pi-Star環境での読み取り専用ファイルシステム完全回避
+echo "🔓 ファイルシステムを書き込み可能モードに変更しています..."
+if [ -x /usr/local/sbin/rpi-rw ]; then
+    /usr/local/sbin/rpi-rw || true
+elif command -v rpi-rw >/dev/null 2>&1; then
     rpi-rw || true
+else
+    mount -o remount,rw / 2>/dev/null || true
+    mount -o remount,rw /boot 2>/dev/null || true
 fi
 
 # 1. サービスの停止と無効化 (新旧すべてのサービスを対象)
