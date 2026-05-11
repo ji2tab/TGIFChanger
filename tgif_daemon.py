@@ -8,7 +8,7 @@
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 #
-# Changes from v2.2.0 (Gemini):
+# Changes from v2.2.0:
 #   - DMR ID: tgif.network セクション正引き (§2.4仕様準拠)
 #   - FIFO制御をUnix domain socketに変更(競合・上書き消滅を解消)
 #   - GPIOエンジン: libgpiod v1/v2 + gpiodetect(Pi5対応) 追加
@@ -30,7 +30,7 @@ DMRGW_CONF     = "/etc/dmrgateway"
 LOCK_FILE      = "/run/tgifchanger-py.lock"
 CMD_SOCKET     = "/run/tgifchanger-py.sock"  # daemon制御用 UDS
 LOG_PATTERN    = "MMDVM-*.log"
-GPIO_FAILSAFE_SEC = 120   # HIGH状態の上限秒数(Gemini版のフェイルセーフを継承)
+GPIO_FAILSAFE_SEC = 120   # HIGH状態の上限秒数(フェイルセーフ)
 
 # デフォルト設定 (仕様書§3)
 config = {
@@ -182,7 +182,7 @@ def get_dynamic_tgs():
 
 # ---------------------------------------------------------------------------
 # GPIO エンジン (ハイブリッド版)
-# デフォルト: pinctrl/raspi-gpio/sysfs (Gemini版、Pi-Star Buster実績)
+# デフォルト: pinctrl/raspi-gpio/sysfs (Buster実績)
 # オプト: libgpiod v1/v2 (Bookworm/Pi5対応、仕様書§6推奨)
 # ---------------------------------------------------------------------------
 
@@ -229,7 +229,7 @@ class GPIOEngine:
 
     Modes:
       'auto' (デフォルト)
-          → pinctrl / raspi-gpio / sysfs を順に試す (Gemini版)
+          → pinctrl / raspi-gpio / sysfs を順に試す (v2.2.0互換)
       'libgpiod'
           → libgpiod v1/v2 を使用 (§6対応、Bookworm/Pi5推奨)
       'pinctrl', 'raspi-gpio', 'sysfs', 'null'
@@ -306,7 +306,7 @@ class GPIOEngine:
         return "null"
 
     def _fallback_simple(self) -> str:
-        """pinctrl → raspi-gpio → sysfs → null (Gemini版の優先順)。"""
+        """pinctrl → raspi-gpio → sysfs → null (v2.2.0互換の優先順)。"""
         for eng in ("pinctrl", "raspi-gpio", "sysfs"):
             result = self._init_simple(eng)
             if result != "null":
@@ -389,7 +389,7 @@ class GPIOEngine:
 class CmdServer:
     """
     tg_change.py からのコマンドを Unix socket 経由で受け取る。
-    Gemini版のFIFO(ポーリング+上書き競合)を置き換え。
+    以前のFIFO(ポーリング+上書き競合)を置き換え。
 
     プロトコル: クライアントが1行テキストを送る → "OK\n" を返す。
     コマンド一覧:
@@ -641,7 +641,7 @@ class App:
 
         try:
             while not self._stop.is_set():
-                # フェイルセーフ: GPIO HIGH タイムアウト (Gemini版継承)
+                # フェイルセーフ: GPIO HIGH タイムアウト
                 if (self.gpio.state == 1
                         and self.gpio.high_start > 0
                         and time.time() - self.gpio.high_start > GPIO_FAILSAFE_SEC):
