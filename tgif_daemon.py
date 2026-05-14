@@ -4,21 +4,20 @@
 # TGIFChanger-Py - Unified MMDVM Daemon
 #
 # File:        tgif_daemon.py
-# Version:     v2.3.1
+# Version:     v2.3.2
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 #
-# Changes from v2.3.0:
-#   - TGRewrite自動抽出の高度化: DMRGatewayとMMDVMHostの両方をスキャン
-#   - TGRewrite解析ロジック対応 (例: 2,6,2,44833,1 -> WATCH:6, RESTORE:44833)
-#   - デフォルトの復帰TGを 168 から 4000 (Disconnect) へ変更
+# Changes from v2.3.1:
+#   - [FIX] EOFバッファの罠（フリーズ問題）を回避するため、
+#           ログ読み込みループに fh.seek(fh.tell()) を復活
 # =============================================================================
 
 import os, sys, re, time, glob, fcntl, errno, signal, socket, threading
 import urllib.request, urllib.error, subprocess, shutil
 from pathlib import Path
 
-VERSION        = "v2.3.1"
+VERSION        = "v2.3.2"
 CONF_FILE      = "/etc/tgifchanger.conf"
 MMDVM_CONF     = "/etc/mmdvmhost"
 DMRGW_CONF     = "/etc/dmrgateway"
@@ -32,8 +31,8 @@ config = {
     "LOG_DIR":          "/var/log/pi-star",
     "WATCH_SLOT":       "2",
     "RESTORE_SLOT":     "2",
-    "WATCH_TG":         "",  # 空にして動的抽出を優先させる
-    "RESTORE_TG":       "",  # 空にして動的抽出を優先させる
+    "WATCH_TG":         "",  
+    "RESTORE_TG":       "",  
     "GPIO_PIN":         "17",
     "GPIO_CHIP":        "auto",
     "GPIO_BACKEND":     "auto",
@@ -42,17 +41,13 @@ config = {
     "TGIF_API_TIMEOUT": "10",
 }
 
-
 def log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
-
 
 # ---------------------------------------------------------------------------
 # 設定読み込み
 # ---------------------------------------------------------------------------
-
 def load_config() -> None:
-    """bash KEY=VALUE形式の設定ファイルを読み込む。"""
     if not os.path.exists(CONF_FILE):
         return
     try:
@@ -66,13 +61,10 @@ def load_config() -> None:
     except OSError as e:
         log(f"⚠️ 設定読み込みエラー: {e}")
 
-
 # ---------------------------------------------------------------------------
-# DMR ID / コールサイン (仕様書 §2.4 に準拠)
+# DMR ID / コールサイン / 動的TG 抽出
 # ---------------------------------------------------------------------------
-
 def _iter_sections(path: str):
-    """(section_name, [lines]) を順に返す簡易 INI パーサ。"""
     if not os.path.isfile(path):
         return
     current, buf = "", []
@@ -88,7 +80,6 @@ def _iter_sections(path: str):
     except OSError:
         return
 
-
 def _kv(line: str):
     s = line.strip()
     if not s or s.startswith(("#", ";")):
@@ -98,14 +89,7 @@ def _kv(line: str):
     k, _, v = s.partition("=")
     return k.strip(), v.split("#", 1)[0].strip()
 
-
 def get_dmr_id() -> str:
-    """
-    取得順序 (仕様書 §2.4):
-      1. /etc/dmrgateway の [DMR Network *] で Address=tgif.network の Id=
-      2. /etc/mmdvmhost の先頭 Id= (fallback)
-    """
-    # 1) dmrgateway
     for section, lines in _iter_sections(DMRGW_CONF):
         if not section.startswith("DMR Network"):
             continue
@@ -122,15 +106,12 @@ def get_dmr_id() -> str:
                 found_id = v
         if is_tgif and found_id:
             return found_id
-
-    # 2) mmdvmhost fallback
     for _sec, lines in _iter_sections(MMDVM_CONF):
         for line in lines:
             kv = _kv(line)
             if kv and kv[0] == "Id" and kv[1]:
                 return kv[1]
     return ""
-
 
 def get_my_callsign() -> str:
     for _sec, lines in _iter_sections(MMDVM_CONF):
@@ -140,20 +121,11 @@ def get_my_callsign() -> str:
                 return kv[1].upper()
     return ""
 
-
 def get_dynamic_tgs():
-    """
-    (WATCH_TG, RESTORE_TG) を解決する。
-    tgifchanger.conf に値があれば最優先、なければ DMRGateway/MMDVMHost の
-    tgif.network セクション内の TGRewrite から自動抽出。
-    何も見つからなければ (1, 4000) を返す。
-    """
     w = config.get("WATCH_TG", "").strip()
     r = config.get("RESTORE_TG", "").strip()
     if w and r:
         return w, r
-
-    # DMRGateway または MMDVMHost の TGRewrite から自動抽出
     for conf_path in [DMRGW_CONF, MMDVM_CONF]:
         for section, lines in _iter_sections(conf_path):
             if not section.startswith("DMR Network"):
@@ -170,32 +142,22 @@ def get_dynamic_tgs():
                 elif k.startswith("TGRewrite") and rewrite is None:
                     rewrite = v
             if is_tgif and rewrite:
-                # 例: 2,6,2,44833,1 -> parts[1]=6(WATCH), parts[3]=44833(RESTORE)
                 parts = rewrite.split(",")
                 parsed_w = re.sub(r"\D", "", parts[1]) if len(parts) > 1 else ""
                 parsed_r = re.sub(r"\D", "", parts[3]) if len(parts) > 3 else ""
                 return (w or parsed_w or "1"), (r or parsed_r or "4000")
-
     return (w or "1"), (r or "4000")
 
-
 # ---------------------------------------------------------------------------
-# GPIO エンジン (ハイブリッド版)
+# GPIO エンジン
 # ---------------------------------------------------------------------------
-
 def _detect_gpiochip(requested: str) -> str:
-    """gpiochip名を解決。'auto'なら gpiodetect でBCMチップを探す。"""
-    if requested.startswith("gpiochip"):
-        return requested
-    if requested.isdigit():
-        return f"gpiochip{requested}"
-    if requested != "auto":
-        return requested
-    if not shutil.which("gpiodetect"):
-        return "gpiochip0"
+    if requested.startswith("gpiochip"): return requested
+    if requested.isdigit(): return f"gpiochip{requested}"
+    if requested != "auto": return requested
+    if not shutil.which("gpiodetect"): return "gpiochip0"
     try:
-        cp = subprocess.run(["gpiodetect"], capture_output=True, text=True,
-                            check=False, timeout=2.0)
+        cp = subprocess.run(["gpiodetect"], capture_output=True, text=True, check=False, timeout=2.0)
         for line in cp.stdout.splitlines():
             m = re.match(r"^(gpiochip\d+)\s+\[(.+?)\]", line)
             if m and ("pinctrl-bcm" in m.group(2) or "pinctrl-rp1" in m.group(2)):
@@ -204,21 +166,15 @@ def _detect_gpiochip(requested: str) -> str:
         pass
     return "gpiochip0"
 
-
 def _gpioset_version() -> int:
-    """gpiosetのメジャーバージョン。未インストール→0。"""
-    if not shutil.which("gpioset"):
-        return 0
+    if not shutil.which("gpioset"): return 0
     try:
-        cp = subprocess.run(["gpioset", "--version"], capture_output=True,
-                            text=True, check=False, timeout=2.0)
+        cp = subprocess.run(["gpioset", "--version"], capture_output=True, text=True, check=False, timeout=2.0)
         blob = (cp.stdout or "") + (cp.stderr or "")
-        if re.search(r"libgpiod\)?\s*2|libgpiod 2", blob):
-            return 2
+        if re.search(r"libgpiod\)?\s*2|libgpiod 2", blob): return 2
         return 1
     except (OSError, subprocess.SubprocessError):
         return 0
-
 
 class GPIOEngine:
     def __init__(self, pin: str, chip_cfg: str, backend_cfg: str):
@@ -230,65 +186,41 @@ class GPIOEngine:
         self._bg_proc = None
         self.backend_cfg = backend_cfg.lower()
         self.engine = self._select()
-        log(f"🎛  GPIO{self.pin} engine={self.engine}" +
-            (f" chip={self.chip}" if "libgpiod" in self.engine else ""))
+        log(f"🎛  GPIO{self.pin} engine={self.engine}" + (f" chip={self.chip}" if "libgpiod" in self.engine else ""))
 
     def _select(self) -> str:
         b = self.backend_cfg
         if b == "libgpiod":
-            if self._gpioset_ver > 0:
-                return f"libgpiod_v{self._gpioset_ver}"
+            if self._gpioset_ver > 0: return f"libgpiod_v{self._gpioset_ver}"
             log("⚠️  libgpiod指定だが gpioset が見つかりません。fallback")
             return self._fallback_simple()
-        
-        if b in ("pinctrl", "raspi-gpio", "sysfs", "null"):
-            return self._init_simple(b)
-        
+        if b in ("pinctrl", "raspi-gpio", "sysfs", "null"): return self._init_simple(b)
         return self._fallback_simple()
 
     def _init_simple(self, engine: str) -> str:
         try:
-            if engine == "pinctrl" and subprocess.run(
-                "command -v pinctrl", shell=True,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                check=False).returncode == 0:
-                subprocess.run(["pinctrl", "set", self.pin, "op", "pn", "dl"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              check=False)
+            if engine == "pinctrl" and subprocess.run("command -v pinctrl", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0:
+                subprocess.run(["pinctrl", "set", self.pin, "op", "pn", "dl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 return "pinctrl"
-            
-            if engine == "raspi-gpio" and subprocess.run(
-                "command -v raspi-gpio", shell=True,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                check=False).returncode == 0:
-                subprocess.run(["raspi-gpio", "set", self.pin, "op", "pn", "dl"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              check=False)
+            if engine == "raspi-gpio" and subprocess.run("command -v raspi-gpio", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0:
+                subprocess.run(["raspi-gpio", "set", self.pin, "op", "pn", "dl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 return "raspi-gpio"
-            
             if engine == "sysfs" and os.path.isdir("/sys/class/gpio"):
                 gdir = f"/sys/class/gpio/gpio{self.pin}"
                 if not os.path.isdir(gdir):
-                    with open("/sys/class/gpio/export", "w") as f:
-                        f.write(self.pin)
+                    with open("/sys/class/gpio/export", "w") as f: f.write(self.pin)
                     time.sleep(0.1)
-                with open(f"{gdir}/direction", "w") as f:
-                    f.write("out")
-                with open(f"{gdir}/value", "w") as f:
-                    f.write("0")
+                with open(f"{gdir}/direction", "w") as f: f.write("out")
+                with open(f"{gdir}/value", "w") as f: f.write("0")
                 return "sysfs"
-            
-            if engine == "null":
-                return "null"
-        except OSError:
-            pass
+            if engine == "null": return "null"
+        except OSError: pass
         return "null"
 
     def _fallback_simple(self) -> str:
         for eng in ("pinctrl", "raspi-gpio", "sysfs"):
             result = self._init_simple(eng)
-            if result != "null":
-                return result
+            if result != "null": return result
         return "null"
 
     def _kill_bg(self) -> None:
@@ -297,46 +229,29 @@ class GPIOEngine:
                 self._bg_proc.terminate()
                 self._bg_proc.wait(timeout=1.0)
             except (OSError, subprocess.SubprocessError):
-                try:
-                    self._bg_proc.kill()
-                except OSError:
-                    pass
+                try: self._bg_proc.kill()
+                except OSError: pass
             self._bg_proc = None
 
     def set(self, val: int) -> None:
-        if self.state == val:
-            return
+        if self.state == val: return
         try:
             if "libgpiod" in self.engine:
                 self._kill_bg()
                 if val:
-                    if self._gpioset_ver == 2:
-                        cmd = ["gpioset", "-c", self.chip, "--mode=wait", f"{self.pin}=1"]
-                    else:
-                        cmd = ["gpioset", "--mode=wait", self.chip, f"{self.pin}=1"]
-                    self._bg_proc = subprocess.Popen(
-                        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    cmd = ["gpioset", "-c", self.chip, "--mode=wait", f"{self.pin}=1"] if self._gpioset_ver == 2 else ["gpioset", "--mode=wait", self.chip, f"{self.pin}=1"]
+                    self._bg_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 else:
-                    if self._gpioset_ver == 2:
-                        subprocess.run(["gpioset", "-c", self.chip, f"{self.pin}=0"],
-                                       stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.DEVNULL, check=False)
-                    else:
-                        subprocess.run(["gpioset", self.chip, f"{self.pin}=0"],
-                                       stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.DEVNULL, check=False)
+                    cmd = ["gpioset", "-c", self.chip, f"{self.pin}=0"] if self._gpioset_ver == 2 else ["gpioset", self.chip, f"{self.pin}=0"]
+                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             elif self.engine == "pinctrl":
-                subprocess.run(["pinctrl", "set", self.pin, "dh" if val else "dl"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                subprocess.run(["pinctrl", "set", self.pin, "dh" if val else "dl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             elif self.engine == "raspi-gpio":
-                subprocess.run(["raspi-gpio", "set", self.pin, "dh" if val else "dl"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                subprocess.run(["raspi-gpio", "set", self.pin, "dh" if val else "dl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             elif self.engine == "sysfs":
-                with open(f"/sys/class/gpio/gpio{self.pin}/value", "w") as f:
-                    f.write(str(val))
+                with open(f"/sys/class/gpio/gpio{self.pin}/value", "w") as f: f.write(str(val))
         except OSError as e:
             log(f"⚠️ GPIO Error: {e}")
-
         self.high_start = time.time() if val else 0.0
         self.state = val
         log(f"⚡ GPIO{self.pin} -> HIGH" if val else f"🌑 GPIO{self.pin} -> LOW")
@@ -346,16 +261,12 @@ class GPIOEngine:
         self._kill_bg()
         if self.engine == "sysfs":
             try:
-                with open("/sys/class/gpio/unexport", "w") as f:
-                    f.write(self.pin)
-            except OSError:
-                pass
-
+                with open("/sys/class/gpio/unexport", "w") as f: f.write(self.pin)
+            except OSError: pass
 
 # ---------------------------------------------------------------------------
-# コマンドソケットサーバ (Unix domain socket)
+# コマンドソケットサーバ
 # ---------------------------------------------------------------------------
-
 class CmdServer:
     def __init__(self, app: "App") -> None:
         self.app  = app
@@ -365,11 +276,9 @@ class CmdServer:
 
     def start(self) -> None:
         try:
-            if os.path.exists(CMD_SOCKET):
-                os.unlink(CMD_SOCKET)
+            if os.path.exists(CMD_SOCKET): os.unlink(CMD_SOCKET)
             os.makedirs(os.path.dirname(CMD_SOCKET) or "/", exist_ok=True)
-        except OSError:
-            pass
+        except OSError: pass
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             s.bind(CMD_SOCKET)
@@ -390,42 +299,32 @@ class CmdServer:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as w:
                 w.settimeout(0.2)
                 w.connect(CMD_SOCKET)
-        except OSError:
-            pass
-        if self._thr:
-            self._thr.join(timeout=2.0)
+        except OSError: pass
+        if self._thr: self._thr.join(timeout=2.0)
         if self._sock:
-            try:
-                self._sock.close()
-            except OSError:
-                pass
-        try:
-            os.unlink(CMD_SOCKET)
-        except OSError:
-            pass
+            try: self._sock.close()
+            except OSError: pass
+        try: os.unlink(CMD_SOCKET)
+        except OSError: pass
 
     def _serve(self) -> None:
         while not self._stop.is_set():
             try:
                 conn, _ = self._sock.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                break
+            except socket.timeout: continue
+            except OSError: break
             with conn:
                 try:
                     conn.settimeout(2.0)
                     data = b""
                     while b"\n" not in data and len(data) < 512:
                         chunk = conn.recv(512)
-                        if not chunk:
-                            break
+                        if not chunk: break
                         data += chunk
                     cmd  = data.decode("utf-8", "replace").strip().lower()
                     resp = self._handle(cmd)
                     conn.sendall((resp + "\n").encode("utf-8"))
-                except OSError:
-                    continue
+                except OSError: continue
 
     def _handle(self, cmd: str) -> str:
         app = self.app
@@ -436,8 +335,7 @@ class CmdServer:
             load_config()
             app.watch_tg, app.restore_tg = get_dynamic_tgs()
             log("🔄 設定リロード完了")
-            log(f"   HOME=TG{app.restore_tg}  WATCH=TG{app.watch_tg}"
-                f"  DELAY={config['RESTORE_DELAY']}s")
+            log(f"   HOME=TG{app.restore_tg}  WATCH=TG{app.watch_tg}  DELAY={config['RESTORE_DELAY']}s")
             return "OK reload"
         if cmd == "status":
             import json
@@ -454,19 +352,13 @@ class CmdServer:
             return json.dumps(d, ensure_ascii=False)
         return f"ERR unknown command: {cmd!r}"
 
-
 # ---------------------------------------------------------------------------
 # メインアプリケーション
 # ---------------------------------------------------------------------------
-
 class App:
     def __init__(self) -> None:
         load_config()
-        self.gpio       = GPIOEngine(
-            config["GPIO_PIN"],
-            config.get("GPIO_CHIP", "auto"),
-            config.get("GPIO_BACKEND", "auto")
-        )
+        self.gpio       = GPIOEngine(config["GPIO_PIN"], config.get("GPIO_CHIP", "auto"), config.get("GPIO_BACKEND", "auto"))
         self.timer: "threading.Timer | None" = None
         self._timer_lock = threading.Lock()
         self.dmr_id     = get_dmr_id()
@@ -476,8 +368,7 @@ class App:
         self._cmd_server = CmdServer(self)
 
         log(f"🚀 TGIFChanger-Py {VERSION} Active")
-        log(f"   HOME=TG{self.restore_tg}/Slot{config['RESTORE_SLOT']}"
-            f"  DELAY={config.get('RESTORE_DELAY', '120')}s")
+        log(f"   HOME=TG{self.restore_tg}/Slot{config['RESTORE_SLOT']}  DELAY={config.get('RESTORE_DELAY', '120')}s")
         log(f"   WATCH=TG{self.watch_tg}  DMR ID={self.dmr_id or '(unknown)'}")
 
     def cancel_timer(self) -> None:
@@ -502,30 +393,22 @@ class App:
             self.timer = None
         log(f"🔄 TG {self.restore_tg} に自動復帰中...")
         slot_idx = int(config.get("RESTORE_SLOT", "2")) - 1
-        url = (f"{config['TGIF_API'].rstrip('/')}"
-               f"/{self.dmr_id}/{slot_idx}/{self.restore_tg}")
+        url = (f"{config['TGIF_API'].rstrip('/')}/{self.dmr_id}/{slot_idx}/{self.restore_tg}")
         try:
-            with urllib.request.urlopen(
-                urllib.request.Request(url, method="GET"),
-                timeout=int(config.get("TGIF_API_TIMEOUT", "10"))
-            ) as res:
+            with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=int(config.get("TGIF_API_TIMEOUT", "10"))) as res:
                 log(f"✅ TG変更リクエスト送信完了 (HTTP {res.status})")
-        except urllib.error.HTTPError as e:
-            log(f"⚠️ HTTP {e.code}")
-        except (urllib.error.URLError, OSError) as e:
-            log(f"❌ TGIF API 通信エラー: {e}")
+        except urllib.error.HTTPError as e: log(f"⚠️ HTTP {e.code}")
+        except (urllib.error.URLError, OSError) as e: log(f"❌ TGIF API 通信エラー: {e}")
 
     def process_line(self, line: str) -> None:
         slot_marker = f"Slot {config['WATCH_SLOT']},"
-        if slot_marker not in line:
-            return
+        if slot_marker not in line: return
 
         if "voice header" in line:
             self.cancel_timer()
             m_call = re.search(r"from (\S+)", line)
             from_call = m_call.group(1).upper() if m_call else ""
-            if from_call and self.my_call and from_call == self.my_call:
-                return
+            if from_call and self.my_call and from_call == self.my_call: return
             m_tg = re.search(r"to TG (\d+)", line)
             if m_tg and m_tg.group(1) == self.watch_tg:
                 self.gpio.set(1)
@@ -560,7 +443,6 @@ class App:
 
         self._install_signals()
         self._cmd_server.start()
-
         log_dir = config.get("LOG_DIR", "/var/log/pi-star")
 
         def get_latest():
@@ -570,8 +452,7 @@ class App:
         current_file = None
         for _ in range(240):
             current_file = get_latest()
-            if current_file:
-                break
+            if current_file: break
             time.sleep(0.5)
         if not current_file:
             log("❌ ログファイルが見つかりません。終了します。")
@@ -584,9 +465,7 @@ class App:
 
         try:
             while not self._stop.is_set():
-                if (self.gpio.state == 1
-                        and self.gpio.high_start > 0
-                        and time.time() - self.gpio.high_start > GPIO_FAILSAFE_SEC):
+                if (self.gpio.state == 1 and self.gpio.high_start > 0 and time.time() - self.gpio.high_start > GPIO_FAILSAFE_SEC):
                     log(f"🚨 [FAIL-SAFE] {GPIO_FAILSAFE_SEC}s timeout. Forcing LOW.")
                     self.gpio.set(0)
 
@@ -594,6 +473,9 @@ class App:
                 if line:
                     self.process_line(line)
                     continue
+                
+                # --- ⚠️ 魔法の1行（EOFバッファクリアによるフリーズ防止） ---
+                fh.seek(fh.tell())
 
                 time.sleep(0.2)
                 latest = get_latest()
@@ -609,14 +491,11 @@ class App:
                             fh.seek(0, 2)
                     except FileNotFoundError:
                         pass
-
         except KeyboardInterrupt:
             pass
         finally:
-            try:
-                fh.close()
-            except OSError:
-                pass
+            try: fh.close()
+            except OSError: pass
             self._shutdown()
 
         return 0
@@ -626,28 +505,20 @@ class App:
         self.cancel_timer()
         self.gpio.cleanup()
         self._cmd_server.stop()
-        try:
-            os.unlink(LOCK_FILE)
-        except OSError:
-            pass
+        try: os.unlink(LOCK_FILE)
+        except OSError: pass
 
     def _install_signals(self) -> None:
-        def stop(sig, frame):
-            self._stop.set()
+        def stop(sig, frame): self._stop.set()
         def reload_(sig, frame):
             load_config()
             self.watch_tg, self.restore_tg = get_dynamic_tgs()
             log("🔄 SIGHUP: 設定リロード完了")
         for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                signal.signal(sig, stop)
-            except (ValueError, OSError):
-                pass
-        try:
-            signal.signal(signal.SIGHUP, reload_)
-        except (ValueError, OSError, AttributeError):
-            pass
-
+            try: signal.signal(sig, stop)
+            except (ValueError, OSError): pass
+        try: signal.signal(signal.SIGHUP, reload_)
+        except (ValueError, OSError, AttributeError): pass
 
 if __name__ == "__main__":
     sys.exit(App().run())
