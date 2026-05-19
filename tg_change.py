@@ -4,15 +4,16 @@
 # TGIFChanger-Py - TGIF Talk Group Changer CLI
 #
 # File:        tg_change.py
-# Version:     v2.3.1
+# Version:     v2.3.2
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 #
-# Changes from v2.3.0:
-#   - デフォルト表示を -168 から -4000 へ変更
+# Changes from v2.3.1:
+#   - [FIX] 設定ファイル書き込み時の競合（レースコンディション）を防止。
+#           fcntl.flock による排他制御と、os.replace によるアトミック書き込みを導入。
 # =============================================================================
 
-import sys, os, re, socket, json, urllib.request, urllib.error
+import sys, os, re, socket, json, urllib.request, urllib.error, fcntl
 from pathlib import Path
 
 CONF_FILE  = "/etc/tgifchanger.conf"
@@ -53,25 +54,44 @@ def _load_conf() -> dict:
     return result
 
 
+# --- [v2.3.2 変更点] 安全なアトミック書き込みへの刷新 ---
 def _save_conf(key: str, value: str) -> None:
     if os.geteuid() != 0:
         print(f"❌ エラー: 設定変更には root 権限が必要です。")
         print(f"   sudo tg_change {' '.join(sys.argv[1:])} を実行してください。")
         sys.exit(1)
-    lines, found = [], False
-    if os.path.isfile(CONF_FILE):
-        for line in Path(CONF_FILE).read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True):
-            if re.match(rf"^\s*{re.escape(key)}\s*=", line):
-                lines.append(f'{key}="{value}"\n')
-                found = True
-            else:
-                lines.append(line)
-    if not found:
-        lines.append(f'{key}="{value}"\n')
+
+    lock_file = CONF_FILE + ".lock"
+    tmp_file = CONF_FILE + ".tmp"
+
     try:
-        Path(CONF_FILE).write_text("".join(lines), encoding="utf-8")
+        # 1. ロックファイルで同時実行をブロック（排他ロック）
+        with open(lock_file, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+
+            # 2. 現在の設定内容を読み込む
+            lines, found = [], False
+            if os.path.isfile(CONF_FILE):
+                for line in Path(CONF_FILE).read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True):
+                    if re.match(rf"^\s*{re.escape(key)}\s*=", line):
+                        lines.append(f'{key}="{value}"\n')
+                        found = True
+                    else:
+                        lines.append(line)
+            if not found:
+                lines.append(f'{key}="{value}"\n')
+
+            # 3. 一時ファイル（.tmp）へ安全に書き出し
+            Path(tmp_file).write_text("".join(lines), encoding="utf-8")
+
+            # 4. OSのシステムコールレベルで一瞬で本番ファイルと入れ替え
+            os.replace(tmp_file, CONF_FILE)
+
     except OSError as e:
         print(f"❌ 書き込みエラー: {e}")
+        if os.path.exists(tmp_file):
+            try: os.unlink(tmp_file)
+            except OSError: pass
         sys.exit(1)
 
 
@@ -214,24 +234,24 @@ def cmd_change_tg(arg: str) -> int:
 
 
 def show_help() -> None:
-    print("TGIFChanger CLI v2.3.1\n")
+    print("TGIFChanger CLI v2.3.2\n")
     print("使用方法:")
     print("  【API操作 (即時変更)】")
     print("  tg_change -<TG>[:<Slot>]  現在の接続先TGを即座に変更")
-    print("  tg_change -4000           スロット1 を TG4000 に変更")
-    print("  tg_change -4000:2         スロット2 を TG4000 に変更")
+    print("  tg_change -4000            スロット1 を TG4000 に変更")
+    print("  tg_change -4000:2          スロット2 を TG4000 に変更")
     print()
     print("  【デーモン操作】")
     print("  tg_change -s / --cancel   動作中の復帰タイマーを停止")
-    print("  tg_change --status        デーモンの状態を JSON 表示")
+    print("  tg_change --status         デーモンの状態を JSON 表示")
     print()
     print("  【設定の変更・確認 (root必要)】")
-    print("  tg_change -w <TG>         監視TG (WATCH_TG) を設定")
-    print("  tg_change -r <TG>         復帰TG (RESTORE_TG) を設定")
-    print("  tg_change -t <秒数>       復帰時間 (RESTORE_DELAY) を設定")
+    print("  tg_change -w <TG>          監視TG (WATCH_TG) を設定")
+    print("  tg_change -r <TG>          復帰TG (RESTORE_TG) を設定")
+    print("  tg_change -t <秒数>        復帰時間 (RESTORE_DELAY) を設定")
     print("  tg_change -c              現在の設定一覧を確認")
     print()
-    print("  -h / --help               このヘルプを表示")
+    print("  -h / --help                このヘルプを表示")
 
 
 def main() -> int:
