@@ -4,20 +4,20 @@
 # TGIFChanger-Py - Unified MMDVM Daemon
 #
 # File:        tgif_daemon.py
-# Version:     v2.3.2
+# Version:     v2.3.3
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 #
-# Changes from v2.3.1:
-#   - [FIX] EOFバッファの罠（フリーズ問題）を回避するため、
-#           ログ読み込みループに fh.seek(fh.tell()) を復活
+# Changes from v2.3.2:
+#   - [FIX] logrotate等によるログ消失・切替瞬間のレースコンディションを回避。
+#           get_latest()の戻り値チェックと os.stat 例外ハンドリングを強化。
 # =============================================================================
 
 import os, sys, re, time, glob, fcntl, errno, signal, socket, threading
 import urllib.request, urllib.error, subprocess, shutil
 from pathlib import Path
 
-VERSION        = "v2.3.2"
+VERSION        = "v2.3.3"
 CONF_FILE      = "/etc/tgifchanger.conf"
 MMDVM_CONF     = "/etc/mmdvmhost"
 DMRGW_CONF     = "/etc/dmrgateway"
@@ -420,10 +420,10 @@ class App:
 
             if tg == self.watch_tg:
                 self.gpio.set(0)
-                log(f"[   IDLE   ] TG{tg}")
+                log(f"[    IDLE   ] TG{tg}")
             elif tg is None and self.gpio.state == 1:
                 self.gpio.set(0)
-                log("[   IDLE   ] Force Reset (Signal Lost)")
+                log("[    IDLE   ] Force Reset (Signal Lost)")
 
             if tg and tg not in (self.watch_tg, self.restore_tg):
                 self.schedule_restore(tg)
@@ -474,23 +474,33 @@ class App:
                     self.process_line(line)
                     continue
                 
-                # --- ⚠️ 魔法の1行（EOFバッファクリアによるフリーズ防止） ---
+                # --- EOFバッファクリアによるフリーズ防止 ---
                 fh.seek(fh.tell())
-
                 time.sleep(0.2)
+
+                # --- [v2.3.3 変更点] ログ切替チェックの堅牢化 ---
                 latest = get_latest()
-                if latest:
-                    try:
-                        new_ino = os.stat(latest).st_ino
-                        if latest != current_file or new_ino != current_ino:
-                            fh.close()
-                            current_file = latest
-                            fh = open(current_file, "r", encoding="utf-8", errors="ignore")
-                            current_ino = new_ino
-                            log(f"🔄 ログ切替: {os.path.basename(current_file)}")
-                            fh.seek(0, 2)
-                    except FileNotFoundError:
-                        pass
+                if not latest:
+                    # logrotateの瞬間に一時的にglobが空になった場合は、現ファイル維持のまま次ループへ
+                    continue
+
+                try:
+                    new_ino = os.stat(latest).st_ino
+                    # ファイル名が変わった、またはinodeが変わった（同名で新ファイルが生成された）場合
+                    if latest != current_file or new_ino != current_ino:
+                        # 完全に書き換わる（または古いログのフラッシュ）を少しだけ待つ安全弁
+                        time.sleep(0.1)
+                        
+                        fh.close()
+                        current_file = latest
+                        fh = open(current_file, "r", encoding="utf-8", errors="ignore")
+                        current_ino = new_ino
+                        log(f"🔄 ログ切替: {os.path.basename(current_file)}")
+                        fh.seek(0, 2)
+                except (FileNotFoundError, PermissionError):
+                    # ログの圧縮・削除処理中の瞬間的なエラーは無視して、現ファイルを掴んだまま次ループで再検知を待つ
+                    continue
+
         except KeyboardInterrupt:
             pass
         finally:
