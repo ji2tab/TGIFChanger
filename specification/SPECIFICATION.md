@@ -145,6 +145,22 @@ GPIO17 への HIGH 出力は、すべての受信イベントで発生するわ�
 3. **自局コールサイン除外:** 送信元コールサインが自局（DMRGateway に設定された `Id=` から導出）でないこと。自局送信中に誤ってGPIOが HIGH になることを防ぐ。
 
 上記以外の TG（例: ダイナミックTGとして一時接続中の他TG）の受信では GPIO は反応しない。
+```mermaid
+flowchart TD
+    A[受信ログエントリ検出] --> B{スロット一致?\nWATCH_SLOT と一致}
+    B -- No --> Z1[GPIO スルー\n反応しない]
+    B -- Yes --> C{TG一致?\nWATCH_TG と一致}
+    C -- No --> Z2[GPIO スルー\n反応しない]
+    C -- Yes --> D{自局コールサイン?\nDMRGateway Id= と照合}
+    D -- 自局 --> Z3[GPIO スルー\n誤トリガー防止]
+    D -- 他局 --> E[GPIO17 HIGH出力\nOpenCCVoice へ通知]
+
+    style Z1 fill:#ccc,color:#333
+    style Z2 fill:#ccc,color:#333
+    style Z3 fill:#ccc,color:#333
+    style E fill:#2a9d8f,color:#fff
+```
+
 
 #### タイマー管理
 
