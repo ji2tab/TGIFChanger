@@ -135,6 +135,25 @@ FHS に基づき、実行ファイルを `/opt/tgifchanger-py/` に集約する�
 
 - 外部コマンド `tail -F` を用いず、PythonネイティブのファイルI/OでRAMディスク上のログを監視する。
 - WPSDが数秒〜数十秒間隔でファイルをローテーション（再作成）する挙動に対して、ファイルの i-node 変更を検知して瞬時に再オープンすることで、パイプ詰まりやフリーズを物理的に排除した。
+```mermaid
+flowchart TD
+    START([デーモン起動]) --> OPEN[ログファイルを開く\n/var/log/pi-star/MMDVM-*.log]
+    OPEN --> READ{新しい行を読む}
+    READ -- データあり --> PARSE[行を正規表現で解析]
+    PARSE --> EVENT{受信イベント?}
+    EVENT -- Yes --> TRIGGER[GPIO トリガー判定へ]
+    EVENT -- No --> READ
+    READ -- EOF --> INODE{inodeが変わった?\nファイルがローテーション}
+    INODE -- Yes --> REOPEN[ファイルを再オープン]
+    REOPEN --> READ
+    INODE -- No --> WAIT[短時間スリープ\n0.1秒待機]
+    WAIT --> READ
+
+    style START fill:#2a9d8f,color:#fff
+    style TRIGGER fill:#e9c46a,color:#333
+    style REOPEN fill:#e76f51,color:#fff
+```
+
 
 #### GPIO出力トリガー条件
 
@@ -173,6 +192,28 @@ flowchart TD
   - **libgpiod v1/v2:** Bookworm / Raspberry Pi 5 環境で必須。gpiodetect でBCMチップを動的探索する。
   - **pinctrl / raspi-gpio / sysfs:** レガシー環境 (Buster等) のフォールバック。
 - **フェイルセーフ:** ネットワーク瞬断等で終了ログを取りこぼした場合に備え、HIGH状態が 120秒 (デフォルト) 継続すると強制的にLOWへ落とす安全装置を搭載する。
+```mermaid
+flowchart TD
+    START([GPIO_BACKEND 設定を読む]) --> CHECK{auto 設定?}
+    CHECK -- No\n手動指定 --> MANUAL[指定バックエンドを使用]
+    CHECK -- Yes --> TRY1{libgpiod v2\n利用可能?}
+    TRY1 -- Yes --> USE1[libgpiod v2 を使用\nBookworm / Pi 5]
+    TRY1 -- No --> TRY2{libgpiod v1\n利用可能?}
+    TRY2 -- Yes --> USE2[libgpiod v1 を使用\nBullseye等]
+    TRY2 -- No --> TRY3{pinctrl\n利用可能?}
+    TRY3 -- Yes --> USE3[pinctrl を使用]
+    TRY3 -- No --> TRY4{raspi-gpio\n利用可能?}
+    TRY4 -- Yes --> USE4[raspi-gpio を使用]
+    TRY4 -- No --> USE5[sysfs を使用\nレガシー最終手段]
+
+    style USE1 fill:#2a9d8f,color:#fff
+    style USE2 fill:#2a9d8f,color:#fff
+    style USE3 fill:#457b9d,color:#fff
+    style USE4 fill:#457b9d,color:#fff
+    style USE5 fill:#888,color:#fff
+    style MANUAL fill:#e9c46a,color:#333
+```
+
 
 ### 2.2 tg_change.py (CLIツール)
 
