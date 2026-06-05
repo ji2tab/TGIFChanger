@@ -109,6 +109,38 @@
 +=======================================================================+
 ```
 
+```mermaid
+graph TB
+    subgraph NET["☁️ インターネット"]
+        TGIF["TGIF Network"]
+    end
+
+    subgraph PI["🖥️ Raspberry Pi (Pi-Star / WPSD)"]
+        MMDVM["MMDVMHost"]
+        DMRGW["DMRGateway"]
+        LOG["/var/log/pi-star/\nMMDVM-YYYY-MM-DD.log\n(RAMディスク)"]
+        subgraph SUITE["TGIFChanger-Py Suite"]
+            DAEMON["tgif_daemon.py\n(統合デーモン)"]
+            CLI["tg_change.py\n(CLIツール)"]
+        end
+        GPIO["GPIO17 (Pin 11)\n3.3V Active High"]
+    end
+
+    subgraph ARDUINO["🔌 Arduino Nano (OpenCCVoice)"]
+        D11["D11 / TM BUSY Input\n(INPUT mode, 5V)"]
+    end
+
+    RADIO["📻 DMR Radio\n/ Network"] <-->|"電波 (DMR)"| TGIF
+    TGIF <-->|"DMR routing"| MMDVM
+    MMDVM -->|"writes"| LOG
+    DMRGW -->|"conf read"| MMDVM
+    LOG -->|"Native File I/O\ninode tracking"| DAEMON
+    DAEMON <-->|"UDS / JSON"| CLI
+    CLI -->|"HTTP GET"| TGIF
+    DAEMON -->|"HIGH / LOW"| GPIO
+    GPIO -->|"Signal Wire\n3.3V CMOS"| D11
+```
+
 ### 1.2 ファイル配置
 
 FHS に基づき、実行ファイルを `/opt/tgifchanger-py/` に集約する。
