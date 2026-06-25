@@ -344,3 +344,43 @@ INI 形式ファイルをセクション単位でイテレートするジェネ�
 | `subprocess`, `shutil` | GPIO コマンド実行・ツール存在確認 |
 | `json` | `status` コマンドの JSON 生成 |
 | `pathlib.Path` | ファイル読み込み |
+
+
+---
+
+## 付録A. Raspberry Pi GPIO ピンアサイン（40 ピン）
+
+対象: Pi Zero / Zero W / Zero 2 W / 2 / 3 / 4（40 ピンヘッダ）
+`GPIO_PIN` は **BCM 番号** で指定します（下図の "GPIOxx" の数字）。
+
+```
+                  3V3  [ 1] [ 2]  5V
+          GPIO2 (SDA)  [ 3] [ 4]  5V
+          GPIO3 (SCL)  [ 5] [ 6]  GND
+       GPIO4 (GPCLK0)  [ 7] [ 8]  GPIO14 (TXD)
+                  GND  [ 9] [10]  GPIO15 (RXD)
+               GPIO17  [11] [12]  GPIO18 (PCM_CLK)
+               GPIO27  [13] [14]  GND
+               GPIO22  [15] [16]  GPIO23
+                  3V3  [17] [18]  GPIO24
+        GPIO10 (MOSI)  [19] [20]  GND
+         GPIO9 (MISO)  [21] [22]  GPIO25
+        GPIO11 (SCLK)  [23] [24]  GPIO8 (CE0)
+                  GND  [25] [26]  GPIO7 (CE1)
+        GPIO0 (ID_SD)  [27] [28]  GPIO1 (ID_SC)
+                GPIO5  [29] [30]  GND
+                GPIO6  [31] [32]  GPIO12 (PWM0)
+        GPIO13 (PWM1)  [33] [34]  GND
+      GPIO19 (PCM_FS)  [35] [36]  GPIO16
+               GPIO26  [37] [38]  GPIO20 (PCM_DIN)
+                  GND  [39] [40]  GPIO21 (PCM_DOUT)
+```
+
+### A.1 `GPIO_PIN` に使えるピン
+
+| 区分 | BCM 番号 | 備考 |
+|------|---------|------|
+| **推奨（汎用 / 衝突しにくい）** | 17（既定）, 22, 23, 24, 25, 27, 5, 6, 12, 13, 16, 26, 19, 20, 21, 4 | 特殊機能割り当てがなく出力に適する |
+| **避ける（周辺機器が使用）** | 2, 3（I2C → OLED） / 14, 15（UART → MMDVM モデム・Nextion） / 7〜11（SPI） / 0, 1（HAT ID EEPROM・予約） / 18（MMDVM の PCM/PWM で使われがち） | ホットスポット構成と競合する恐れ |
+
+> **注:** 実際に使われているピンは HAT・ディスプレイの構成で変わります。割り当て前に、お使いの MMDVM HAT / OLED / Nextion の配線と重複しないか確認してください。
