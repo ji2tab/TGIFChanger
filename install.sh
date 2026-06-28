@@ -3,21 +3,21 @@
 # TGIFChanger-Py - Smart Installer & Migrator
 #
 # File:        install.sh
-# Version:     v2.3.1
+# Version:     v2.3.4
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 #
-# Changes from v2.3.0:
-#   - DMRGateway / MMDVMHost の TGRewrite ルールを自動スキャンし、
-#     対話型プロンプトのデフォルト値として動的にサジェストする機能を追加
-#   - TGRewrite抽出時に複数行が結合されるバグを修正
-#   - ベースの復帰デフォルト値を 168 から 4000 (Disconnect) へ変更
-#   - [FIX] パイプ実行時における Pi-Star rpi-rw の完全回避ロジックを実装
+# Changes from v2.3.1:
+#   - [NEW] 対話型セットアップに「コールサイン監視時間 (CALLSIGN_TIMEOUT)」を追加。
+#           他TGへRFアクセスした最後の局を確認できなくなってから復帰するまでの秒数。
+#           デフォルト 300秒。非対話(パイプ)実行時も 300秒を採用。
+#   - 生成する設定ファイルテンプレートに CALLSIGN_TIMEOUT 行を追加。
+#   - Pi 5 / gpiochip4 等の記述を削除し、対象を Pi Zero〜4 に整理。
 # =============================================================================
 
 set -euo pipefail
 
-VERSION="v2.3.1"
+VERSION="v2.3.4"
 INSTALL_DIR="/opt/tgifchanger-py"
 CONF_FILE="/etc/tgifchanger.conf"
 SERVICE="tgifchanger-py"
@@ -148,7 +148,7 @@ if [[ -f "${CONF_FILE}" ]]; then
     echo "📝 既存 ${CONF_FILE} を保持します。"
     echo "   新オプションの確認用テンプレートを ${CONF_FILE}.new に保存:"
     cat > "${CONF_FILE}.new" <<EOF
-# TGIFChanger 設定ファイル (v2.3.1)
+# TGIFChanger 設定ファイル (v2.3.4)
 #
 # Bash KEY=VALUE 形式。両方の環境で読み込み可能:
 #   sudo bash install.sh     (インストール)
@@ -166,6 +166,13 @@ RESTORE_SLOT="2"
 WATCH_TG="${DETECTED_WATCH}"
 RESTORE_TG="${DETECTED_RESTORE}"
 RESTORE_DELAY="120"
+
+# --- コールサイン監視 (真の利用者ウォッチドッグ) ---
+# 他TGへ "RF(自局側)キーアップ" した最後の局を「真の利用者」として記録し、
+# その局のRFが下記の秒数だけ確認できなければ、ネット側の通話が続いていても
+# RESTORE_TG へ強制復帰します。0 を指定するとこの機能は無効になります。
+CALLSIGN_TIMEOUT="300"
+
 GPIO_PIN="17"
 
 # --- GPIO Backend (ハイブリッド対応) ---
@@ -191,16 +198,20 @@ else
 
         read -p "▶ 復帰までの時間(秒) (RESTORE_DELAY) [デフォルト: 120]: " INPUT_RESTORE_DELAY </dev/tty || true
         RESTORE_DELAY="${INPUT_RESTORE_DELAY:-120}"
+
+        read -p "▶ コールサイン監視時間(秒) (CALLSIGN_TIMEOUT) [デフォルト: 300 / 0で無効]: " INPUT_CALLSIGN_TIMEOUT </dev/tty || true
+        CALLSIGN_TIMEOUT="${INPUT_CALLSIGN_TIMEOUT:-300}"
         echo ""
     else
         echo "⚠️ 非対話モードで実行されています。自動抽出された推奨値を採用します。"
         WATCH_TG="${DETECTED_WATCH}"
         RESTORE_TG="${DETECTED_RESTORE}"
         RESTORE_DELAY="120"
+        CALLSIGN_TIMEOUT="300"
     fi
 
     cat > "${CONF_FILE}" <<EOF
-# TGIFChanger 設定ファイル (v2.3.1)
+# TGIFChanger 設定ファイル (v2.3.4)
 #
 # Bash KEY=VALUE 形式。両方の環境で読み込み可能:
 #   sudo bash install.sh     (インストール)
@@ -218,17 +229,29 @@ RESTORE_SLOT="2"
 WATCH_TG="${WATCH_TG}"
 RESTORE_TG="${RESTORE_TG}"
 RESTORE_DELAY="${RESTORE_DELAY}"
+
+# --- コールサイン監視 (真の利用者ウォッチドッグ) ---
+#
+# 他TGへ "RF(自局側)キーアップ" した最後の局を「真の利用者」として記録し、
+# その局のRFが CALLSIGN_TIMEOUT 秒だけ確認できなければ、ネット側(リモート)の
+# 通話が続いていても RESTORE_TG へ強制復帰します。
+#   - network 受信(リモート通話)はカウント対象外
+#   - 別の局がRFキーアップすると、追跡対象をその局へ切り替える
+#   - "0" を指定するとこの機能は無効 (従来の RESTORE_DELAY のみで動作)
+#
+CALLSIGN_TIMEOUT="${CALLSIGN_TIMEOUT}"
+
 GPIO_PIN="17"
 
 # --- GPIO Backend (ハイブリッド対応) ---
-# 
+#
 # GPIO_BACKEND:
 #   "auto"     (デフォルト)
 #              → pinctrl / raspi-gpio / sysfs を順に試す
 #              → Pi-Star(Buster) on Pi Zero 2W で動作実績あり
 #   "libgpiod"
 #              → libgpiod v1/v2 を使用
-#              → Bookworm / Pi5 環境に推奨 (仕様書§6)
+#              → Bookworm 環境で推奨
 #              → gpiodetect で gpiochip を自動判定
 #   "pinctrl", "raspi-gpio", "sysfs", "null"
 #              → 強制指定
@@ -236,11 +259,9 @@ GPIO_PIN="17"
 GPIO_BACKEND="auto"
 
 # GPIO_CHIP (libgpiod使用時のみ有効):
-#   "auto"     (デフォルト) → gpiodetect で BCM チップを探す
-#                            Pi4以前: gpiochip0
-#                            Pi5:    gpiochip4
-#   "0", "4"   → explicit chip number
-#   "gpiochip0", "gpiochip4" → chip name
+#   "auto"     (デフォルト) → gpiodetect で BCM チップを探す (通常 gpiochip0)
+#   "0"        → explicit chip number
+#   "gpiochip0" → chip name
 #
 GPIO_CHIP="auto"
 
