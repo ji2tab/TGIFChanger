@@ -4,13 +4,14 @@
 # TGIFChanger-Py - TGIF Talk Group Changer CLI
 #
 # File:        tg_change.py
-# Version:     v2.3.2
+# Version:     v2.3.4
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 #
-# Changes from v2.3.1:
-#   - [FIX] 設定ファイル書き込み時の競合（レースコンディション）を防止。
-#           fcntl.flock による排他制御と、os.replace によるアトミック書き込みを導入。
+# Changes from v2.3.2:
+#   - [NEW] -k オプションを追加。CALLSIGN_TIMEOUT (コールサイン監視時間/秒) を
+#           設定し、デーモンへ即時リロードできる。"0" で無効化。
+#           RESTORE_DELAY より短い値を指定した場合は警告を表示する。
 # =============================================================================
 
 import sys, os, re, socket, json, urllib.request, urllib.error, fcntl
@@ -54,7 +55,7 @@ def _load_conf() -> dict:
     return result
 
 
-# --- [v2.3.2 変更点] 安全なアトミック書き込みへの刷新 ---
+# --- [v2.3.2] 安全なアトミック書き込み ---
 def _save_conf(key: str, value: str) -> None:
     if os.geteuid() != 0:
         print(f"❌ エラー: 設定変更には root 権限が必要です。")
@@ -233,8 +234,31 @@ def cmd_change_tg(arg: str) -> int:
         return 1
 
 
+def cmd_set_callsign_timeout(val: str) -> int:
+    # 0以上の整数のみ許可
+    if not re.match(r"^\d+$", val):
+        print(f"❌ エラー: 秒数は 0 以上の整数で指定してください: {val!r}")
+        return 1
+
+    if val == "0":
+        return cmd_set_conf("CALLSIGN_TIMEOUT", val, "コールサイン監視 無効 (0)")
+
+    # RESTORE_DELAY より短い場合は警告 (通常交信中の誤復帰を防ぐため)
+    conf = _load_conf()
+    try:
+        restore_delay = int(conf.get("RESTORE_DELAY", "120"))
+    except ValueError:
+        restore_delay = 120
+    if int(val) < restore_delay:
+        print(f"⚠️ 注意: コールサイン監視時間({val}秒) が 復帰時間 RESTORE_DELAY({restore_delay}秒) より短く設定されています。")
+        print(f"   通常の交信中（相手の応答をネット側で受信中）でもホームTGへ戻ってしまう場合があります。")
+        print(f"   通常は {restore_delay}秒以上を推奨します。")
+
+    return cmd_set_conf("CALLSIGN_TIMEOUT", val, f"コールサイン監視時間 {val}秒")
+
+
 def show_help() -> None:
-    print("TGIFChanger CLI v2.3.2\n")
+    print("TGIFChanger CLI v2.3.4\n")
     print("使用方法:")
     print("  【API操作 (即時変更)】")
     print("  tg_change -<TG>[:<Slot>]  現在の接続先TGを即座に変更")
@@ -249,6 +273,7 @@ def show_help() -> None:
     print("  tg_change -w <TG>          監視TG (WATCH_TG) を設定")
     print("  tg_change -r <TG>          復帰TG (RESTORE_TG) を設定")
     print("  tg_change -t <秒数>        復帰時間 (RESTORE_DELAY) を設定")
+    print("  tg_change -k <秒数>        コールサイン監視時間 (CALLSIGN_TIMEOUT) を設定 (0で無効)")
     print("  tg_change -c              現在の設定一覧を確認")
     print()
     print("  -h / --help                このヘルプを表示")
@@ -272,7 +297,7 @@ def main() -> int:
     if cmd == "--status":
         return cmd_status()
 
-    if cmd in ("-t", "-w", "-r"):
+    if cmd in ("-t", "-w", "-r", "-k"):
         if len(args) < 2:
             print("❌ エラー: 設定値が入力されていません。")
             show_help()
@@ -284,6 +309,8 @@ def main() -> int:
             return cmd_set_conf("WATCH_TG", val, f"監視TG {val}")
         if cmd == "-r":
             return cmd_set_conf("RESTORE_TG", val, f"復帰TG {val}")
+        if cmd == "-k":
+            return cmd_set_callsign_timeout(val)
 
     if re.match(r"^-\d+(:\d+)?$", cmd):
         return cmd_change_tg(cmd)
