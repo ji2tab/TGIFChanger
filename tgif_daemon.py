@@ -4,20 +4,24 @@
 # TGIFChanger-Py - Unified MMDVM Daemon
 #
 # File:        tgif_daemon.py
-# Version:     v2.3.3
+# Version:     v2.3.4
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
 #
-# Changes from v2.3.2:
-#   - [FIX] logrotate等によるログ消失・切替瞬間のレースコンディションを回避。
-#           get_latest()の戻り値チェックと os.stat 例外ハンドリングを強化。
+# Changes from v2.3.3:
+#   - [NEW] コールサイン・ウォッチドッグ (真の利用者監視) を追加。
+#           他TGへ "RF(自局側)キーアップ" した最後の局を「真の利用者」として記録し、
+#           その局のRFが CALLSIGN_TIMEOUT 秒(既定300)確認できなければ、
+#           ネット側の通話が続いていても RESTORE_TG へ強制復帰する。
+#           network 受信(リモート通話)はカウント対象外。
+#           別の局がRFキーアップすると追跡対象を切り替える。
 # =============================================================================
 
 import os, sys, re, time, glob, fcntl, errno, signal, socket, threading
 import urllib.request, urllib.error, subprocess, shutil
 from pathlib import Path
 
-VERSION        = "v2.3.3"
+VERSION        = "v2.3.4"
 CONF_FILE      = "/etc/tgifchanger.conf"
 MMDVM_CONF     = "/etc/mmdvmhost"
 DMRGW_CONF     = "/etc/dmrgateway"
@@ -37,6 +41,7 @@ config = {
     "GPIO_CHIP":        "auto",
     "GPIO_BACKEND":     "auto",
     "RESTORE_DELAY":    "120",
+    "CALLSIGN_TIMEOUT": "300",  # 真の利用者(RFアクセス局)を確認できなくなってから復帰するまでの秒数。0で無効。
     "TGIF_API":         "http://tgif.network:5040/api/sessions/update",
     "TGIF_API_TIMEOUT": "10",
 }
@@ -335,7 +340,7 @@ class CmdServer:
             load_config()
             app.watch_tg, app.restore_tg = get_dynamic_tgs()
             log("🔄 設定リロード完了")
-            log(f"   HOME=TG{app.restore_tg}  WATCH=TG{app.watch_tg}  DELAY={config['RESTORE_DELAY']}s")
+            log(f"   HOME=TG{app.restore_tg}  WATCH=TG{app.watch_tg}  DELAY={config['RESTORE_DELAY']}s  CS_TIMEOUT={config.get('CALLSIGN_TIMEOUT','300')}s")
             return "OK reload"
         if cmd == "status":
             import json
@@ -344,6 +349,9 @@ class CmdServer:
                 "watch_tg":   app.watch_tg,
                 "restore_tg": app.restore_tg,
                 "delay":      config.get("RESTORE_DELAY", "120"),
+                "callsign_timeout": config.get("CALLSIGN_TIMEOUT", "300"),
+                "tracked_call":  app.tracked_call or None,
+                "away_tg":       app.away_tg,
                 "gpio_state": app.gpio.state,
                 "gpio_engine":app.gpio.engine,
                 "gpio_chip":  app.gpio.chip,
@@ -367,9 +375,21 @@ class App:
         self._stop      = threading.Event()
         self._cmd_server = CmdServer(self)
 
+        # --- [v2.3.4] コールサイン・ウォッチドッグ状態 ---
+        self.away_tg: "str | None" = None   # 現在「離脱(他TG)」中なら、そのTG番号。ホーム/監視TGに戻ると None。
+        self.tracked_call = ""              # 他TGへ最後にRFアクセスした「真の利用者」コールサイン
+        self.rf_deadline  = 0.0             # この時刻を過ぎても tracked_call のRFが無ければ強制復帰
+
         log(f"🚀 TGIFChanger-Py {VERSION} Active")
-        log(f"   HOME=TG{self.restore_tg}/Slot{config['RESTORE_SLOT']}  DELAY={config.get('RESTORE_DELAY', '120')}s")
+        log(f"   HOME=TG{self.restore_tg}/Slot{config['RESTORE_SLOT']}  DELAY={config.get('RESTORE_DELAY', '120')}s  CS_TIMEOUT={config.get('CALLSIGN_TIMEOUT','300')}s")
         log(f"   WATCH=TG{self.watch_tg}  DMR ID={self.dmr_id or '(unknown)'}")
+
+    # --- [v2.3.4] 離脱状態・ウォッチドッグのクリア ---
+    def _clear_away(self) -> None:
+        if self.away_tg is not None or self.tracked_call:
+            self.away_tg      = None
+            self.tracked_call = ""
+            self.rf_deadline  = 0.0
 
     def cancel_timer(self) -> None:
         with self._timer_lock:
@@ -399,6 +419,8 @@ class App:
                 log(f"✅ TG変更リクエスト送信完了 (HTTP {res.status})")
         except urllib.error.HTTPError as e: log(f"⚠️ HTTP {e.code}")
         except (urllib.error.URLError, OSError) as e: log(f"❌ TGIF API 通信エラー: {e}")
+        # 復帰したのでウォッチドッグ状態を解除
+        self._clear_away()
 
     def process_line(self, line: str) -> None:
         slot_marker = f"Slot {config['WATCH_SLOT']},"
@@ -408,9 +430,31 @@ class App:
             self.cancel_timer()
             m_call = re.search(r"from (\S+)", line)
             from_call = m_call.group(1).upper() if m_call else ""
-            if from_call and self.my_call and from_call == self.my_call: return
             m_tg = re.search(r"to TG (\d+)", line)
-            if m_tg and m_tg.group(1) == self.watch_tg:
+            tg = m_tg.group(1) if m_tg else None
+            is_rf = "received RF voice header" in line   # 自局(RF)キーアップ。network受信と区別する。
+
+            # --- [v2.3.4] コールサイン・ウォッチドッグ ---
+            # ホーム/監視TGの通話を見たら「在宅」とみなしウォッチドッグ解除。
+            # 他TGへの "RF(自局側)キーアップ" は「真の利用者のアクセス」として記録し、
+            #   そのコールサインを追跡対象に設定/更新して 5分タイマーをリセットする。
+            #   ※ network受信(リモート通話)はここを通らないのでカウントされない。
+            if tg and tg in (self.watch_tg, self.restore_tg):
+                self._clear_away()
+            elif is_rf and tg:
+                cs_to = float(config.get("CALLSIGN_TIMEOUT", "300") or 0)
+                if cs_to > 0:
+                    switched = bool(self.tracked_call) and self.tracked_call != from_call
+                    self.tracked_call = from_call
+                    self.rf_deadline  = time.time() + cs_to
+                    self.away_tg      = tg
+                    tag = "対象切替" if switched else "アクセス確認"
+                    log(f"👤 {tag}: {from_call or '?'} → TG{tg} （{int(cs_to)}秒監視開始）")
+
+            # 自局送信は GPIO 点灯の対象外（ウォッチドッグ記録は上で済ませてある）
+            if from_call and self.my_call and from_call == self.my_call:
+                return
+            if tg and tg == self.watch_tg:
                 self.gpio.set(1)
                 log(f"[ RECEIVING ] TG{self.watch_tg} | From: {from_call or 'Unknown'}")
 
@@ -469,6 +513,15 @@ class App:
                     log(f"🚨 [FAIL-SAFE] {GPIO_FAILSAFE_SEC}s timeout. Forcing LOW.")
                     self.gpio.set(0)
 
+                # --- [v2.3.4] コールサイン・ウォッチドッグ判定 ---
+                # 他TGに留まっている間、真の利用者(RFアクセス局)が CALLSIGN_TIMEOUT 秒
+                # 確認できなければ、ネット側の通話が続いていても強制復帰する。
+                if (self.away_tg and self.rf_deadline and time.time() > self.rf_deadline):
+                    cs_to = int(float(config.get("CALLSIGN_TIMEOUT", "300") or 0))
+                    log(f"⏰ [CS-WATCHDOG] {self.tracked_call or '?'} を{cs_to}秒確認できず → TG{self.restore_tg} へ強制復帰")
+                    self.cancel_timer()
+                    self._do_restore()   # 内部で _clear_away() される
+
                 line = fh.readline()
                 if line:
                     self.process_line(line)
@@ -478,7 +531,7 @@ class App:
                 fh.seek(fh.tell())
                 time.sleep(0.2)
 
-                # --- [v2.3.3 変更点] ログ切替チェックの堅牢化 ---
+                # --- ログ切替チェックの堅牢化 (v2.3.3) ---
                 latest = get_latest()
                 if not latest:
                     # logrotateの瞬間に一時的にglobが空になった場合は、現ファイル維持のまま次ループへ
