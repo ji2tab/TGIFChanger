@@ -1,7 +1,7 @@
 # uninstall.sh ソフトウェア仕様書
 
 **ファイル:** `uninstall.sh`
-**バージョン:** v2.3.1
+**バージョン:** v2.3.4
 **作成者:** Kazuhiko Shinoda (JI2TAB)
 **ライセンス:** GPL v3
 **リポジトリ:** https://github.com/ji2tab/TGIFChanger
@@ -11,6 +11,10 @@
 ## 1. 概要
 
 TGIFChanger-Py の完全アンインストーラです。すべてのプログラム本体・systemd サービス定義・一時ファイル・設定ファイルを削除します。旧バージョン（`log_monitor`・`auto_tg_restore`）のファイルも対象に含まれます。
+
+### v2.3.4 での変更点
+
+- 設定ファイル削除に、`tg_change` が使用する排他ロック/一時ファイル（`/etc/tgifchanger.conf.lock` / `/etc/tgifchanger.conf.tmp`）を追加し、消し残りを防止
 
 ---
 
@@ -103,6 +107,8 @@ sudo bash uninstall.sh
 |------|------|
 | `/etc/tgifchanger.conf` | メイン設定ファイル |
 | `/etc/tgifchanger.conf.new` | アップグレード用差分テンプレート |
+| `/etc/tgifchanger.conf.lock` | `tg_change` の排他ロックファイル（v2.3.4 追加） |
+| `/etc/tgifchanger.conf.tmp` | `tg_change` のアトミック書き込み用一時ファイル（v2.3.4 追加） |
 
 > **注意:** 設定ファイルはバックアップなしで完全に削除されます。再インストール時は `install.sh` による設定ファイルの再生成が必要です。
 
@@ -124,6 +130,8 @@ sudo bash uninstall.sh
 | 一時ファイル | `/run/auto_tg_restore.pid`（旧） |
 | 設定ファイル | `/etc/tgifchanger.conf` |
 | 設定ファイル | `/etc/tgifchanger.conf.new` |
+| 設定ファイル | `/etc/tgifchanger.conf.lock`（v2.3.4 追加） |
+| 設定ファイル | `/etc/tgifchanger.conf.tmp`（v2.3.4 追加） |
 
 ---
 
