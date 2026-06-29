@@ -1,7 +1,7 @@
 # install.sh ソフトウェア仕様書
 
 **ファイル:** `install.sh`
-**バージョン:** v2.3.1
+**バージョン:** v2.3.4
 **作成者:** Kazuhiko Shinoda (JI2TAB)
 **ライセンス:** GPL v3
 **リポジトリ:** https://github.com/ji2tab/TGIFChanger
@@ -11,6 +11,12 @@
 ## 1. 概要
 
 TGIFChanger-Py のスマートインストーラ兼マイグレーターです。旧バージョンの自動クリーンアップ、Python3 の確認、ファイル配置、設定ファイルの生成、systemd サービス登録までを一括で行います。
+
+### v2.3.4 での変更点
+
+- 対話型セットアップに「コールサイン監視時間（`CALLSIGN_TIMEOUT`）」のプロンプトを追加（デフォルト 300秒、非対話実行時も 300秒を採用）
+- 生成する設定ファイルテンプレートに `CALLSIGN_TIMEOUT` 行を追加
+- Pi 5 / `gpiochip4` 等の記述を削除し、対象を Raspberry Pi Zero〜4 に整理
 
 ### v2.3.1 での変更点
 
@@ -40,7 +46,7 @@ sudo bash install.sh --from-github
 
 | 変数 | 値 | 説明 |
 |------|----|------|
-| `VERSION` | `v2.3.1` | インストーラバージョン |
+| `VERSION` | `v2.3.4` | インストーラバージョン |
 | `INSTALL_DIR` | `/opt/tgifchanger-py` | プログラム配置先ディレクトリ |
 | `CONF_FILE` | `/etc/tgifchanger.conf` | 設定ファイルパス |
 | `SERVICE` | `tgifchanger-py` | systemd サービス名 |
@@ -182,6 +188,7 @@ TGRewrite0=2,<WATCH_TG>,2,<RESTORE_TG>,1
 | `▶ 監視TG (WATCH_TG)` | `WATCH_TG` | 抽出値（`DETECTED_WATCH`） |
 | `▶ 復帰TG (RESTORE_TG)` | `RESTORE_TG` | 抽出値（`DETECTED_RESTORE`） |
 | `▶ 復帰までの時間(秒) (RESTORE_DELAY)` | `RESTORE_DELAY` | `120` |
+| `▶ コールサイン監視時間(秒) (CALLSIGN_TIMEOUT)` | `CALLSIGN_TIMEOUT` | `300`（`0` で無効） |
 
 **非対話モード**（CI・パイプ実行など）:
 
@@ -196,6 +203,7 @@ RESTORE_SLOT="2"
 WATCH_TG="<入力値または抽出値>"
 RESTORE_TG="<入力値または抽出値>"
 RESTORE_DELAY="<入力値または 120>"
+CALLSIGN_TIMEOUT="<入力値または 300>"
 GPIO_PIN="17"
 GPIO_BACKEND="auto"
 GPIO_CHIP="auto"
@@ -213,7 +221,7 @@ TGIF_API_TIMEOUT="10"
 
 ```ini
 [Unit]
-Description=TGIFChanger-Py Unified Daemon (v2.3.1)
+Description=TGIFChanger-Py Unified Daemon (v2.3.4)
 Documentation=https://github.com/ji2tab/TGIFChanger
 After=network-online.target mmdvmhost.service dmrgateway.service
 Wants=network-online.target
