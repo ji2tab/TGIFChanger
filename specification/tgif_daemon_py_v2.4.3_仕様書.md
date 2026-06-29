@@ -1,7 +1,7 @@
 # tgif_daemon.py ソフトウェア仕様書
 
 **ファイル:** `tgif_daemon.py`
-**バージョン:** v2.3.3
+**バージョン:** v2.3.4
 **作成者:** Kazuhiko Shinoda (JI2TAB)
 **ライセンス:** GPL v3
 **リポジトリ:** https://github.com/ji2tab/TGIFChanger
@@ -11,6 +11,17 @@
 ## 1. 概要
 
 TGIFChanger-Py のメインデーモンです。MMDVM ログを常時監視し、DMR トークグループの変化を検出して TGIF API への自動復帰リクエストと GPIO 出力制御を行います。systemd によって管理され、`tg_change` CLI ツールからは Unix ドメインソケット経由で制御されます。
+
+### v2.3.4 での変更点
+
+コールサイン・ウォッチドッグ（真の利用者監視）を追加:
+
+- 他TGへ **RF（自局側）でキーアップした最後の局** を「真の利用者」として記録・追跡（`tracked_call` / `away_tg` / `rf_deadline`）
+- 追跡対象局の RF が `CALLSIGN_TIMEOUT` 秒（既定 300）確認できなければ、ネット側の通話が続いていても `RESTORE_TG` へ強制復帰
+- network 受信（リモート通話）はカウント対象外（`received RF voice header` のみを RF アクセスとして扱う）
+- 別の局が RF キーアップすると追跡対象を切り替え
+- `CALLSIGN_TIMEOUT="0"` で本機能を無効化（従来の `RESTORE_DELAY` のみで動作）
+- `status` の JSON に `callsign_timeout` / `tracked_call` / `away_tg` フィールドを追加
 
 ### v2.3.3 での変更点
 
@@ -25,7 +36,7 @@ logrotate 等によるログ消失・切替瞬間のレースコンディショ�
 
 | 定数 | 値 | 説明 |
 |------|----|------|
-| `VERSION` | `v2.3.3` | デーモンバージョン（`status` コマンドで返される） |
+| `VERSION` | `v2.3.4` | デーモンバージョン（`status` コマンドで返される） |
 | `CONF_FILE` | `/etc/tgifchanger.conf` | 設定ファイルパス |
 | `MMDVM_CONF` | `/etc/mmdvmhost` | MMDVMHost 設定ファイルパス |
 | `DMRGW_CONF` | `/etc/dmrgateway` | DMRGateway 設定ファイルパス |
@@ -51,6 +62,7 @@ logrotate 等によるログ消失・切替瞬間のレースコンディショ�
 | `GPIO_CHIP` | `auto` | libgpiod 使用時の gpiochip 番号 |
 | `GPIO_BACKEND` | `auto` | GPIO 制御バックエンド |
 | `RESTORE_DELAY` | `120` | 通話終了後、復帰するまでの待機時間（秒） |
+| `CALLSIGN_TIMEOUT` | `300` | 真の利用者（RFアクセス局）を確認できなくなってから強制復帰するまでの秒数。`0` で無効 |
 | `TGIF_API` | `http://tgif.network:5040/api/sessions/update` | TGIF セッション更新 API エンドポイント |
 | `TGIF_API_TIMEOUT` | `10` | TGIF API 呼び出しのタイムアウト（秒） |
 
@@ -84,6 +96,7 @@ readline() で新規行を取得
         ├─ fh.seek(fh.tell())  EOFバッファクリア（フリーズ防止）
         ├─ time.sleep(0.2)
         ├─ GPIO フェイルセーフチェック
+        ├─ コールサイン・ウォッチドッグ判定（後述 §6.3）
         └─ ログファイル切替チェック（後述）
 ```
 
@@ -108,10 +121,13 @@ GPIO が HIGH 状態のまま `GPIO_FAILSAFE_SEC`（120 秒）を超えた場合
 
 ### 6.1 `voice header` 検出時
 
+`voice header` 行から `from <コールサイン>`、`to TG <番号>`、および RF/network 種別（`received RF voice header` を含むかで判定）を抽出します。
+
 | 処理 | 条件 |
 |------|------|
 | 復帰タイマーをキャンセル | 無条件 |
-| 自局送信の除外 | `from <コールサイン>` が `my_call` と一致する場合はスキップ |
+| コールサイン・ウォッチドッグの更新 | §6.3 を参照（自局送信を含む RF キーアップで記録。`my_call` でも記録される） |
+| 自局送信の GPIO 除外 | `from <コールサイン>` が `my_call` と一致する場合、以降の GPIO 点灯処理をスキップ（ウォッチドッグ記録は上で完了済み） |
 | GPIO を HIGH にセット | `to TG <番号>` が `watch_tg` と一致する場合 |
 
 ### 6.2 通話終了系キーワード検出時
@@ -128,6 +144,36 @@ end of voice transmission | transmission lost | watchdog has expired
 | TG が取得できず GPIO が HIGH | GPIO を強制 LOW（Signal Lost） |
 | TG が `watch_tg` / `restore_tg` いずれでもない | 復帰タイマーをセット（`schedule_restore()`） |
 | TG が `watch_tg` または `restore_tg` | タイマーセットをスキップ（ログ出力のみ） |
+
+### 6.3 コールサイン・ウォッチドッグ（v2.3.4）
+
+「真の利用者」＝ `watch_tg` / `restore_tg` 以外のTGへ **RF（自局側）でキーアップした最後の局** を追跡し、その局の RF が一定時間途絶えた場合に強制復帰させる仕組みです。ネット側だけで遠方局の通話が延々と続いてホームTGが奪われ続ける状態を防ぎます。
+
+App が保持する状態:
+
+| 属性 | 初期値 | 内容 |
+|------|--------|------|
+| `away_tg` | `None` | 現在「離脱（他TG）」中ならその TG 番号。`watch_tg` / `restore_tg` に戻ると `None` |
+| `tracked_call` | `""` | 他TGへ最後に RF アクセスした「真の利用者」コールサイン |
+| `rf_deadline` | `0.0` | この時刻を過ぎても `tracked_call` の RF が無ければ強制復帰 |
+
+`process_line()` 内の更新ロジック（`voice header` 検出時）:
+
+| 条件 | 動作 |
+|------|------|
+| TG が `watch_tg` または `restore_tg` | `_clear_away()`（在宅とみなしウォッチドッグ解除） |
+| `received RF voice header` かつ TG あり、かつ `CALLSIGN_TIMEOUT > 0` | `tracked_call` を当該局に設定、`rf_deadline = now + CALLSIGN_TIMEOUT`、`away_tg = TG`。既存追跡局と異なる場合は「対象切替」としてログ |
+| network 受信（リモート通話） | 記録しない（カウント対象外） |
+
+メインループ（EOF 時）の判定:
+
+```
+if away_tg かつ rf_deadline かつ now > rf_deadline:
+    cancel_timer()
+    _do_restore()   # 内部で _clear_away() される
+```
+
+`CALLSIGN_TIMEOUT="0"` の場合、上記の記録・判定は行われず本機能は無効になります。`_clear_away()` は `away_tg` / `tracked_call` / `rf_deadline` を初期化するヘルパで、`_do_restore()` 成功後にも呼ばれます。
 
 ---
 
@@ -151,7 +197,7 @@ GET {TGIF_API}/{DMR_ID}/{RESTORE_SLOT - 1}/{RESTORE_TG}
 | HTTP エラー | `⚠️ HTTP N` |
 | 通信エラー | `❌ TGIF API 通信エラー: ...` |
 
-タイムアウトは `TGIF_API_TIMEOUT` 秒。`_timer_lock`（`threading.Lock`）で排他制御します。
+タイムアウトは `TGIF_API_TIMEOUT` 秒。`_timer_lock`（`threading.Lock`）で排他制御します。復帰実行後は `_clear_away()` を呼び、コールサイン・ウォッチドッグの追跡状態（`away_tg` / `tracked_call` / `rf_deadline`）を解除します。
 
 ---
 
@@ -243,6 +289,9 @@ Unix ドメインソケットサーバ。`cmd-server` という名前のデー�
 | `watch_tg` | 現在の監視 TG |
 | `restore_tg` | 現在の復帰先 TG |
 | `delay` | `RESTORE_DELAY` の現在値 |
+| `callsign_timeout` | `CALLSIGN_TIMEOUT` の現在値 |
+| `tracked_call` | 追跡中の「真の利用者」コールサイン（未追跡時は `null`） |
+| `away_tg` | 離脱中（他TG）の TG 番号（在宅時は `null`） |
 | `gpio_state` | GPIO ピンの状態（`-1`=未設定、`0`=LOW、`1`=HIGH） |
 | `gpio_engine` | 使用中の GPIO バックエンド名 |
 | `gpio_chip` | 使用中の gpiochip 名 |
