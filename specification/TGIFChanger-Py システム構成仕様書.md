@@ -1,4 +1,4 @@
-# TGIFChanger-Py ソフトウェア仕様書
+# TGIFChanger-Py システム構成仕様書
 
 **バージョン:** v2.3.4
 **作成者:** Kazuhiko Shinoda (JI2TAB)
