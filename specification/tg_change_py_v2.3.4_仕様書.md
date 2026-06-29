@@ -1,7 +1,7 @@
 # tg_change.py ソフトウェア仕様書
 
 **ファイル:** `tg_change.py`
-**バージョン:** v2.3.2
+**バージョン:** v2.3.4
 **作成者:** Kazuhiko Shinoda (JI2TAB)
 **ライセンス:** GPL v3
 **リポジトリ:** https://github.com/ji2tab/TGIFChanger
@@ -17,6 +17,14 @@ TGIFChanger-Py デーモン（`tgif_daemon.py`）に対応する **CLI 制御ツ
 - 設定ファイル（`/etc/tgifchanger.conf`）の読み書き
 
 シンボリックリンク `/usr/local/bin/tg_change` 経由で呼び出します。
+
+### v2.3.4 での変更点
+
+`-k` オプションを追加:
+
+- `CALLSIGN_TIMEOUT`（コールサイン監視時間/秒）を設定し、デーモンへ即時リロード
+- `"0"` を指定すると本機能を無効化
+- 指定値が `RESTORE_DELAY` より短い場合は、通常交信中の誤復帰を招く恐れがあるため警告を表示
 
 ### v2.3.2 での変更点
 
@@ -49,6 +57,7 @@ tg_change --status         # デーモン状態を JSON 表示
 tg_change -w <TG>          # WATCH_TG を設定（root 必要）
 tg_change -r <TG>          # RESTORE_TG を設定（root 必要）
 tg_change -t <秒数>        # RESTORE_DELAY を設定（root 必要）
+tg_change -k <秒数>        # CALLSIGN_TIMEOUT を設定（root 必要、0 で無効）
 tg_change -c               # 設定ファイル内容を表示
 tg_change -h / --help      # ヘルプ表示（引数なし時も同様）
 ```
@@ -63,6 +72,7 @@ tg_change -h / --help      # ヘルプ表示（引数なし時も同様）
 | `-w <TG>` | **root** | `cmd_set_conf()` | `WATCH_TG` を変更・保存しデーモンへ即時反映 |
 | `-r <TG>` | **root** | `cmd_set_conf()` | `RESTORE_TG` を変更・保存しデーモンへ即時反映 |
 | `-t <秒>` | **root** | `cmd_set_conf()` | `RESTORE_DELAY` を変更・保存しデーモンへ即時反映 |
+| `-k <秒>` | **root** | `cmd_set_callsign_timeout()` | `CALLSIGN_TIMEOUT` を変更・保存しデーモンへ即時反映（`0` で無効、`RESTORE_DELAY` 未満で警告） |
 | `-c` | 不要 | `cmd_show_config()` | `/etc/tgifchanger.conf` の有効行（コメント除く）を表示 |
 | `-h` / `--help` | 不要 | `show_help()` | ヘルプを表示して終了 |
 
@@ -83,6 +93,9 @@ sudo tg_change -w 1234
 
 # 復帰待機時間を 60 秒に変更
 sudo tg_change -t 60
+
+# コールサイン監視時間を 300 秒に変更（0 で無効）
+sudo tg_change -k 300
 
 # 復帰タイマーを手動キャンセル
 tg_change --cancel
@@ -197,6 +210,19 @@ INI 形式ファイルをセクション単位でイテレートするジェネ�
 
 常に終了コード `0` を返します。
 
+### 5.6 `cmd_set_callsign_timeout(val: str) -> int`
+
+`CALLSIGN_TIMEOUT` 専用の設定関数。バリデーションと警告を行ったうえで `cmd_set_conf()` を呼び出します。
+
+| ステップ | 処理 |
+|---------|------|
+| 1 | `^\d+$` にマッチしない（0 以上の整数でない）場合はエラー表示し終了コード `1` |
+| 2 | `"0"` の場合は「コールサイン監視 無効」として `cmd_set_conf("CALLSIGN_TIMEOUT", "0", ...)` を実行 |
+| 3 | 現在の `RESTORE_DELAY`（既定 120）を `_load_conf()` から取得し、指定値がそれより小さい場合は通常交信中の誤復帰に関する警告を表示 |
+| 4 | `cmd_set_conf("CALLSIGN_TIMEOUT", val, ...)` を実行（保存＋デーモンへ即時反映） |
+
+`cmd_set_conf()` を経由するため、デーモンへの `reload` 送信および終了コード `0` の挙動は §5.4 と同じです。
+
 ### 5.5 `cmd_change_tg(arg: str) -> int`
 
 引数を解析して TGIF API へ GET リクエストを送信します。
@@ -242,6 +268,7 @@ GET {TGIF_API}/{DMR_ID}/{SLOT_INDEX}/{TG番号}
 -c                      →  cmd_show_config()
 --status                →  cmd_status()
 -t / -w / -r <値>       →  cmd_set_conf()  ※値なし時はエラー
+-k <値>                 →  cmd_set_callsign_timeout()  ※値なし時はエラー
 -<数字>[:<数字>]        →  cmd_change_tg()
 その他                  →  エラーメッセージ + show_help() → 終了コード 1
 ```
@@ -270,4 +297,3 @@ GET {TGIF_API}/{DMR_ID}/{SLOT_INDEX}/{TG番号}
 | `urllib.request`, `urllib.error` | TGIF API HTTP 通信 |
 | `fcntl` | 設定ファイルの排他ロック（Linux 専用） |
 | `pathlib.Path` | ファイル読み書き |
-
