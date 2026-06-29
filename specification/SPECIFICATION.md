@@ -1,10 +1,10 @@
 # TGIFChanger-Py 技術仕様書
 
-**Version:** v2.3.1 (Python Unified Daemon Edition)  
+**Version:** v2.3.4 (Python Unified Daemon Edition)  
 **Author:** Kazuhiko Shinoda (JI2TAB)  
 **License:** GPL v3
 
-本仕様書は、TGIFChanger-Py v2.3.1 の設計・実装・保守・再実装を目的とした正式技術仕様書である。従来のシェルスクリプト版（v1.x系）からPython3ネイティブデーモンへフルスクラッチされたアーキテクチャを定義する。
+本仕様書は、TGIFChanger-Py v2.3.4 の設計・実装・保守・再実装を目的とした正式技術仕様書である。従来のシェルスクリプト版（v1.x系）からPython3ネイティブデーモンへフルスクラッチされたアーキテクチャ（v2.3.1）を基礎とし、以降の改訂（v2.3.2〜v2.3.4）を反映する。
 
 ---
 
@@ -31,6 +31,9 @@
 | 1.0 | オリジナル版仕様書（sysfs / TG1固定 / Restart=always / /home/pi-star/scripts） |
 | proto-1.0.0 | Bashプロト版として改訂。共通設定ファイル導入、libgpiod対応、ログファイル日付追従。 |
 | v2.3.1 | Python3による統合デーモン化。tail -Fの廃止（インメモリ監視）、UDS通信、動的TG抽出、対話型インストーラー実装。 |
+| v2.3.2 | 設定ファイル書き込みのアトミック化（fcntl.flock 排他ロック＋os.replace）。 |
+| v2.3.3 | logrotate 切替時のレースコンディションを修正（get_latest 空応答・os.stat 例外の堅牢化）。 |
+| v2.3.4 | コールサイン・ウォッチドッグ（真の利用者監視 / CALLSIGN_TIMEOUT）を追加。tg_change に -k オプション、install.sh に対話プロンプトを追加。対象を Raspberry Pi Zero〜4 に整理。 |
 
 ---
 
@@ -151,10 +154,17 @@ GPIO17 への HIGH 出力は、すべての受信イベントで発生するわ�
 - PIDファイルによる管理を廃止し、メモリ上で `threading.Timer` を用いて安全に管理する。
 - 受信イベントが発生するたびにタイマーを正確にキャンセル・再設定し、TGIF APIへのリクエスト連打（BAN回避）を防ぐ。
 
+#### コールサイン・ウォッチドッグ (真の利用者監視) [v2.3.4]
+
+- `WATCH_TG` / `RESTORE_TG` 以外のTGへ **RF（自局側）でキーアップした最後の局** を「真の利用者」として記録・追跡する。
+- 追跡対象局の RF が `CALLSIGN_TIMEOUT` 秒（デフォルト 300）確認できなくなった場合、ネット側（リモート）の通話が継続していても `RESTORE_TG` へ強制復帰させる。これにより、遠方局のラグチューがネット越しに流れ続けてホームTGが奪われ続ける状態を防ぐ。
+- network 受信（リモート通話）はカウント対象外（`received RF voice header` のみをアクセスとして扱う）。別の局が RF キーアップすると追跡対象を切り替える。
+- `CALLSIGN_TIMEOUT="0"` で無効化でき、その場合は従来の `RESTORE_DELAY` のみで動作する。
+
 #### GPIOバックエンド (ハイブリッド対応)
 
 - 環境に応じて最適なGPIO制御方式を自動判別（auto設定時）する。
-  - **libgpiod v1/v2:** Bookworm / Raspberry Pi 5 環境で必須。gpiodetect でBCMチップを動的探索する。
+  - **libgpiod v1/v2:** Bookworm 環境で推奨。gpiodetect でBCMチップを動的探索する。
   - **pinctrl / raspi-gpio / sysfs:** レガシー環境 (Buster等) のフォールバック。
 - **フェイルセーフ:** ネットワーク瞬断等で終了ログを取りこぼした場合に備え、HIGH状態が 120秒 (デフォルト) 継続すると強制的にLOWへ落とす安全装置を搭載する。
 
@@ -168,7 +178,7 @@ TGIF Network API を呼び出してTGを変更する、およびデーモンを�
 
 #### ホットリロード機能
 
-- 設定ファイル変更後、デーモンを再起動することなくリアルタイムで設定を反映させる（`-t`, `-w`, `-r` オプション）。
+- 設定ファイル変更後、デーモンを再起動することなくリアルタイムで設定を反映させる（`-t`, `-w`, `-r`, `-k` オプション）。`-k` はコールサイン監視時間（`CALLSIGN_TIMEOUT`）を設定する。
 
 #### 権限チェック
 
@@ -191,9 +201,10 @@ TGIF Network API を呼び出してTGを変更する、およびデーモンを�
 | `WATCH_TG` | 監視TG | 1 | 未指定時はTGRewriteから抽出 |
 | `RESTORE_TG` | 復帰TG | 4000 | 切断TG(4000)をデフォルトとし、未指定時はTGRewriteから抽出 |
 | `RESTORE_DELAY` | 復帰待機秒数 | 120 | |
+| `CALLSIGN_TIMEOUT` | 真の利用者(RF)監視秒数 | 300 | 0 で無効。tg_change -k で変更 |
 | `GPIO_PIN` | GPIO番号 (BCM) | 17 | |
 | `GPIO_BACKEND` | バックエンド | auto | libgpiod, pinctrl, sysfs 等 |
-| `GPIO_CHIP` | libgpiod chip名 | auto | gpiochip0, gpiochip4 等 |
+| `GPIO_CHIP` | libgpiod chip名 | auto | 通常 gpiochip0 |
 
 ---
 
@@ -279,7 +290,7 @@ tg_change -c
 | **Hardware** | Raspberry Pi Zero / Zero 2 W / 3 / 4 / 5 |
 | **OS** | Pi-Star (Buster) / WPSD (Bookworm / Bullseye 64-bit) |
 | **Runtime** | Python 3.7 以上 (Python 3.11 等 標準搭載環境) |
-| **GPIO** | libgpiod v1 / v2（Pi 5 では必須）、または pinctrl 搭載環境 |
+| **GPIO** | libgpiod v1 / v2、または pinctrl / raspi-gpio / sysfs 搭載環境 |
 
 ---
 
