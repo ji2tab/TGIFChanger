@@ -1,6 +1,6 @@
 # TGIFChanger-Py ソフトウェア仕様書
 
-**バージョン:** v2.3.1
+**バージョン:** v2.3.4
 **作成者:** Kazuhiko Shinoda (JI2TAB)
 **ライセンス:** GPL v3
 **リポジトリ:** https://github.com/ji2tab/TGIFChanger
@@ -16,6 +16,7 @@ TGIFChanger-Py は、Pi-Star / WPSD ホットスポット上で動作する **DM
 - MMDVM / DMRGateway ログの常時監視とトークグループ変化の検出
 - 指定トークグループ（`WATCH_TG`）への接続検知
 - 設定した待機時間（`RESTORE_DELAY` 秒）経過後の自動復帰（`RESTORE_TG`）
+- コールサイン・ウォッチドッグ（真の利用者の RF を `CALLSIGN_TIMEOUT` 秒確認できなければ強制復帰）［v2.3.4］
 - TGIF API（HTTP POST）を使ったトークグループ強制設定
 - GPIO ピン入力による即時トークグループ切替（OpenCCVoice 連携）
 - `tg_change` コマンドによる実行時パラメータ変更・ステータス確認
@@ -71,6 +72,7 @@ TGIFChanger-Py は、Pi-Star / WPSD ホットスポット上で動作する **DM
 | `WATCH_TG` | 整数 | （自動抽出） | 監視対象トークグループ番号（TGRewrite から抽出） |
 | `RESTORE_TG` | 整数 | `4000` | 自動復帰先トークグループ番号（4000 = Disconnect） |
 | `RESTORE_DELAY` | 整数（秒） | `120` | `WATCH_TG` への接続検知後、復帰するまでの待機時間 |
+| `CALLSIGN_TIMEOUT` | 整数（秒） | `300` | 真の利用者（RFアクセス局）を確認できなくなってから強制復帰するまでの秒数。`0` で無効 |
 | `GPIO_PIN` | 整数 | `17` | GPIO 入力ピン番号（BCM 番号体系） |
 | `GPIO_BACKEND` | 文字列 | `auto` | GPIO 制御バックエンド（後述） |
 | `GPIO_CHIP` | 文字列 | `auto` | libgpiod 使用時の gpiochip 番号（`auto` で自動判定） |
@@ -82,7 +84,7 @@ TGIFChanger-Py は、Pi-Star / WPSD ホットスポット上で動作する **DM
 | 値 | 動作 |
 |----|------|
 | `auto` | `pinctrl` → `raspi-gpio` → `sysfs` の順で利用可能なバックエンドを自動選択（デフォルト） |
-| `libgpiod` | libgpiod v1/v2 を使用。Bookworm / Pi 5 環境で推奨。`gpiodetect` で BCM チップを自動判定。 |
+| `libgpiod` | libgpiod v1/v2 を使用。Bookworm 環境で推奨。`gpiodetect` で BCM チップを自動判定。 |
 | `pinctrl` | `pinctrl` コマンドを強制使用 |
 | `raspi-gpio` | `raspi-gpio` コマンドを強制使用 |
 | `sysfs` | `/sys/class/gpio` を経由する旧来の sysfs インターフェイスを強制使用 |
@@ -156,7 +158,8 @@ journalctl -u tgifchanger-py --since today
 | `tg_change -c` | 設定ファイルの内容を表示 |
 | `tg_change -w <TG番号>` | `WATCH_TG` を変更（即時反映） |
 | `tg_change -r <TG番号>` | `RESTORE_TG` を変更（即時反映） |
-| `tg_change -d <秒>` | `RESTORE_DELAY` を変更（即時反映） |
+| `tg_change -t <秒>` | `RESTORE_DELAY` を変更（即時反映） |
+| `tg_change -k <秒>` | `CALLSIGN_TIMEOUT` を変更（即時反映、`0` で無効） |
 
 > **設定反映のルール:**
 > `tg_change` コマンド経由の変更はデーモンに即時反映されます。
@@ -208,6 +211,21 @@ sudo systemctl daemon-reload
 
 ## 9. バージョン履歴
 
+### v2.3.4
+
+- コールサイン・ウォッチドッグ（真の利用者監視 / `CALLSIGN_TIMEOUT`）を追加。RFアクセス局を一定時間確認できなければネット通話継続中でも強制復帰
+- `tg_change -k <秒>` オプションを追加（`0` で無効、`RESTORE_DELAY` 未満で警告）
+- `install.sh` の対話セットアップに「コールサイン監視時間」を追加、設定テンプレートに `CALLSIGN_TIMEOUT` を追加
+- Pi 5 / `gpiochip4` の記述を削除し、対象を Raspberry Pi Zero〜4 に整理
+
+### v2.3.3
+
+- logrotate 切替時のレースコンディションを修正（`get_latest()` 空応答・`os.stat()` 例外の堅牢化）
+
+### v2.3.2
+
+- 設定ファイル書き込みのアトミック化（`fcntl.flock` 排他ロック＋`os.replace`）
+
 ### v2.3.1
 
 - DMRGateway / MMDVMHost の TGRewrite ルール自動スキャン機能を追加（インストール時のデフォルト値に動的サジェスト）
@@ -221,4 +239,4 @@ sudo systemctl daemon-reload
 
 ---
 
-> 本仕様書は `install.sh` v2.3.1 のソースコードを元に作成しました。`tgif_daemon.py` および `tg_change.py` の詳細仕様については、各スクリプトの docstring またはリポジトリの README を参照してください。
+> 本仕様書は `install.sh` v2.3.4 のソースコードを元に作成しました。`tgif_daemon.py` および `tg_change.py` の詳細仕様については、各スクリプトの docstring またはリポジトリの README を参照してください。
