@@ -1,7 +1,7 @@
 # tgifchanger.conf ソフトウェア仕様書
 
 **ファイル:** `tgifchanger.conf`
-**対応バージョン:** v2.3.0
+**対応バージョン:** v2.3.4
 **作成者:** Kazuhiko Shinoda (JI2TAB)
 **ライセンス:** GPL v3
 **リポジトリ:** https://github.com/ji2tab/TGIFChanger
@@ -22,7 +22,7 @@ TGIFChanger-Py の設定ファイルです。**Bash の KEY=VALUE 形式**で記
 
 | 変更方法 | 反映タイミング |
 |---------|--------------|
-| `tg_change -w/-r/-t` コマンド | デーモンへ即時反映（`reload` コマンド自動送信） |
+| `tg_change -w/-r/-t/-k` コマンド | デーモンへ即時反映（`reload` コマンド自動送信） |
 | `nano` 等で直接編集 | `sudo systemctl restart tgifchanger-py` が必要 |
 
 ---
@@ -102,6 +102,14 @@ KEY=value      # クォートなしも読み込み可能
 | 型 | 整数（秒） |
 | 説明 | `WATCH_TG` / `RESTORE_TG` 以外のTGへの通話終了を検知してから `RESTORE_TG` へ自動復帰するまでの待機時間。`tg_change -t <秒>` で変更できます。 |
 
+#### `CALLSIGN_TIMEOUT`
+
+| 項目 | 内容 |
+|------|------|
+| デフォルト値 | `300` |
+| 型 | 整数（秒） |
+| 説明 | コールサイン・ウォッチドッグ（真の利用者監視）の監視時間。他TGへ **RF（自局側）でキーアップした最後の局** を「真の利用者」として追跡し、その局の RF を本秒数だけ確認できなければ、ネット側（リモート）の通話が続いていても `RESTORE_TG` へ強制復帰します。network 受信（リモート通話）はカウント対象外で、別の局が RF キーアップすると追跡対象を切り替えます。`0` を指定すると本機能は無効になり、従来どおり `RESTORE_DELAY` のみで動作します。`tg_change -k <秒>` で変更できます（`RESTORE_DELAY` より短い値を指定すると警告が表示されます）。 |
+
 ---
 
 ### 3.4 GPIO 制御
@@ -127,7 +135,7 @@ KEY=value      # クォートなしも読み込み可能
 | 値 | 動作 |
 |----|------|
 | `auto` | `pinctrl` → `raspi-gpio` → `sysfs` の順で利用可能なバックエンドを自動選択。Pi-Star (Buster) on Pi Zero 2W で動作実績あり |
-| `libgpiod` | libgpiod v1/v2 を使用。Bookworm / Pi 5 環境で推奨。`gpiodetect` で BCM チップを自動判定 |
+| `libgpiod` | libgpiod v1/v2 を使用。Bookworm 環境で推奨。`gpiodetect` で BCM チップを自動判定 |
 | `pinctrl` | `pinctrl` コマンドを強制使用 |
 | `raspi-gpio` | `raspi-gpio` コマンドを強制使用 |
 | `sysfs` | `/sys/class/gpio` を経由する sysfs インターフェイスを強制使用 |
@@ -146,9 +154,9 @@ KEY=value      # クォートなしも読み込み可能
 
 | 値 | 動作 |
 |----|------|
-| `auto` | `gpiodetect` で BCM チップ（`pinctrl-bcm2xxx` / `pinctrl-rp1`）を自動判定。Pi 4 以前: `gpiochip0`、Pi 5: `gpiochip4` |
-| `0`, `4` | チップ番号を直接指定（`gpiochip0` / `gpiochip4` に変換） |
-| `gpiochip0`, `gpiochip4` | チップ名を直接指定 |
+| `auto` | `gpiodetect` で BCM チップ（`pinctrl-bcm2xxx`）を自動判定。通常は `gpiochip0` |
+| `0` | チップ番号を直接指定（`gpiochip0` に変換） |
+| `gpiochip0` | チップ名を直接指定 |
 
 ---
 
@@ -182,6 +190,7 @@ KEY=value      # クォートなしも読み込み可能
 | `WATCH_TG` | `1` | `tg_change -w <TG>` | 監視トークグループ |
 | `RESTORE_TG` | `168` | `tg_change -r <TG>` | 復帰先トークグループ |
 | `RESTORE_DELAY` | `120` | `tg_change -t <秒>` | 復帰待機時間（秒） |
+| `CALLSIGN_TIMEOUT` | `300` | `tg_change -k <秒>` | 真の利用者の RF 監視時間（秒）。0 で無効 |
 | `GPIO_PIN` | `17` | 手動編集のみ | GPIO 出力ピン番号（BCM） |
 | `GPIO_BACKEND` | `auto` | 手動編集のみ | GPIO バックエンド |
 | `GPIO_CHIP` | `auto` | 手動編集のみ | gpiochip 番号（libgpiod 用） |
