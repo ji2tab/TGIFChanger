@@ -13,6 +13,7 @@ import http.server
 import socketserver
 import urllib.parse
 import subprocess
+import html
 import os
 import sys
 
@@ -47,9 +48,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """標準のログ出力を抑制（ジャーナルを汚さないため）"""
         return
 
+    def _is_cross_site(self):
+        """🔴 CSRF 対策（監査 2026-10）
+
+        この UI は認証を持たないため、運用者のブラウザが外部の悪意ある
+        ページを開くと、そのブラウザから LAN 内の本サーバへ POST が飛び、
+        設定変更や復帰操作を踏まされる（LAN 限定では防げない）。
+        同一オリジンのブラウザ操作と、ブラウザ以外のクライアントのみ通す。
+        """
+        site = self.headers.get("Sec-Fetch-Site")
+        if site is not None:
+            return site not in ("same-origin", "none")
+        origin = self.headers.get("Origin")
+        if origin is not None:
+            return urllib.parse.urlparse(origin).netloc != (self.headers.get("Host") or "")
+        return False
+
     def do_GET(self):
         """管理画面のHTMLを生成して送信する"""
         conf = get_config()
+        # 🔴 監査 2026-10: 設定値は f-string で HTML 本文と属性値に直接
+        # 埋め込まれる。/etc/tgifchanger.conf は外部から編集され得るため、
+        # 描画前に必ずエスケープする（保存型 XSS 対策）。
+        conf = {k: html.escape(str(v), quote=True) for k, v in conf.items()}
         
         # 画面表示用の文字列生成
         watch_disp = f"TG {conf['WATCH_TG']}" if conf['WATCH_TG'] else "未設定"
@@ -130,8 +151,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         """フォームからのデータを処理する"""
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length).decode('utf-8')
+        if self._is_cross_site():
+            self.send_response(403)
+            self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("cross-site request denied".encode("utf-8"))
+            return
+
+        # 🔴 監査 2026-10: Content-Length が無い/不正なリクエストで
+        # 例外になっていたため、安全側に丸める（上限も付ける）。
+        try:
+            content_length = int(self.headers.get('Content-Length') or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length < 0 or content_length > 65536:
+            self.send_response(413)
+            self.end_headers()
+            return
+        post_data = self.rfile.read(content_length).decode('utf-8', 'replace')
         fields = urllib.parse.parse_qs(post_data)
         
         # 1. 設定変更の処理
