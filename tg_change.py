@@ -57,6 +57,12 @@ def _load_conf() -> dict:
 
 # --- [v2.3.2] 安全なアトミック書き込み ---
 def _save_conf(key: str, value: str) -> None:
+    # 🔴 監査 2026-10: 設定ファイル注入に対する最終防衛。
+    # 値は KEY="値" の形で書き出すため、改行やダブルクォートを含む値は
+    # 行を切って任意の設定キー（TGIF_API 等）を注入できてしまう。
+    if re.search(r'["\r\n]', str(value)):
+        print("❌ エラー: 設定値に改行やダブルクォートは使えません。")
+        sys.exit(1)
     if os.geteuid() != 0:
         print(f"❌ エラー: 設定変更には root 権限が必要です。")
         print(f"   sudo tg_change {' '.join(sys.argv[1:])} を実行してください。")
@@ -303,6 +309,12 @@ def main() -> int:
             show_help()
             return 1
         val = args[1]
+        # 🔴 監査 2026-10: -w / -r / -t は値を無検証で
+        # /etc/tgifchanger.conf へ書き込んでいた（-k のみ検証あり）。
+        # TG 番号・秒数はいずれも 0 以上の整数なので、ここで限定する。
+        if cmd in ("-t", "-w", "-r") and not re.match(r"^\d+$", val):
+            print(f"❌ エラー: 0 以上の整数で指定してください: {val!r}")
+            return 1
         if cmd == "-t":
             return cmd_set_conf("RESTORE_DELAY", val, f"復帰時間 {val}秒")
         if cmd == "-w":
