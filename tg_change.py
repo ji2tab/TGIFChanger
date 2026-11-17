@@ -4,9 +4,13 @@
 # TGIFChanger-Py - TGIF Talk Group Changer CLI
 #
 # File:        tg_change.py
-# Version:     v2.3.4
+# Version:     v2.3.5
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
+#
+# Changes from v2.3.4:
+#   - バージョン表記を v2.3.5 に更新 (tgif_daemon.py の XLX 基準接続対応に合わせる)。
+#   - ヘルプに XLX 基準接続の設定例 (-r 4000) を追加。動作の変更はない。
 #
 # Changes from v2.3.2:
 #   - [NEW] -k オプションを追加。CALLSIGN_TIMEOUT (コールサイン監視時間/秒) を
@@ -264,7 +268,7 @@ def cmd_set_callsign_timeout(val: str) -> int:
 
 
 def show_help() -> None:
-    print("TGIFChanger CLI v2.3.4\n")
+    print("TGIFChanger CLI v2.3.5\n")
     print("使用方法:")
     print("  【API操作 (即時変更)】")
     print("  tg_change -<TG>[:<Slot>]  現在の接続先TGを即座に変更")
@@ -281,6 +285,10 @@ def show_help() -> None:
     print("  tg_change -t <秒数>        復帰時間 (RESTORE_DELAY) を設定")
     print("  tg_change -k <秒数>        コールサイン監視時間 (CALLSIGN_TIMEOUT) を設定 (0で無効)")
     print("  tg_change -c              現在の設定一覧を確認")
+    print()
+    print("  【XLX 基準接続 (待機は XLX、TGIF は必要なときだけ接続)】")
+    print("  tg_change -w <XLXのTG>     監視TGを DMRGateway [XLX Network] の TG に合わせる")
+    print("  tg_change -r 4000          復帰先を TGIF の切断にする (XLX の待機に戻る)")
     print()
     print("  -h / --help                このヘルプを表示")
 

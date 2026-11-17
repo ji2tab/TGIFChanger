@@ -1,6 +1,6 @@
 # TGIFChanger-Py 操作説明書（Operation Manual）
 
-対象バージョン: v2.3.1（Python 3 Unified Daemon & Smart Installer Edition）
+対象バージョン: v2.3.5（Python 3 Unified Daemon & Smart Installer Edition）
 対応環境: MMDVM（Pi-Star / WPSD）
 ライセンス: GPL v3
 作者: 篠田 一彦 / Kazuhiko Shinoda (JI2TAB)
@@ -105,6 +105,7 @@ sudo tg_change -t 90     # 復帰までの待機時間（秒）を変更
 | WATCH_TG | 1 | `tg_change -w <TG>` | 監視トークグループ（空なら TGRewrite から自動抽出） |
 | RESTORE_TG | 168 | `tg_change -r <TG>` | 復帰先TG（4000 で TGIF 切断。空ならフォールバック 4000） |
 | RESTORE_DELAY | 120 | `tg_change -t <秒>` | 復帰までの待機時間（秒） |
+| CALLSIGN_TIMEOUT | 300 | `tg_change -k <秒>` | 他TGへ RF アクセスした最後の局を確認できなくなってから強制復帰するまでの秒数（0 で無効） |
 | GPIO_PIN | 17 | 手動編集のみ | GPIO 出力ピン番号（BCM） |
 | GPIO_BACKEND | auto | 手動編集のみ | GPIO バックエンド（auto / libgpiod / pinctrl / raspi-gpio / sysfs / null） |
 | GPIO_CHIP | auto | 手動編集のみ | gpiochip 番号（GPIO_BACKEND=libgpiod のとき有効） |
@@ -165,3 +166,41 @@ curl -L https://raw.githubusercontent.com/ji2tab/TGIFChanger/main/uninstall.sh |
 1. MMDVMHost のログを監視し、`WATCH_TG` の voice header 検出時に GPIO を HIGH にして復帰タイマーをキャンセルします。
 2. `WATCH_TG` / `RESTORE_TG` 以外のTGでの通話終了を検知すると、`RESTORE_DELAY` 秒後に `RESTORE_TG` へ自動復帰します。
 3. 復帰リクエストは `{TGIF_API}/{DMR_ID}/{SLOT_INDEX}/{TG番号}` の形式で送信されます（SLOT_INDEX = スロット番号 − 1）。
+
+---
+
+## 10. XLX 基準接続（v2.3.5）
+
+待機先を XLX リフレクターのモジュールに置き、TGIF は必要なときだけつなぐ使い方です。DMRGateway の `[XLX Network]` を有効にした構成で使います。DMRGateway 側の設定を含む手順の全体は、リポジトリの `XLX_Base_Mode.md` を参照してください。
+
+### 10.1 動作
+
+| 無線機の操作 | 動き |
+|---|---|
+| 待機TG（`WATCH_TG`）で送受信 | XLX のモジュールと送受信する。復帰タイマーは動かない |
+| 別のTGで送信 | TGIF のそのTGへ直結する |
+| 通話終了から `RESTORE_DELAY` 秒後 | TGIF を切断（TG4000）し、XLX だけの待機に戻る |
+
+### 10.2 設定
+
+```bash
+# 監視TGを DMRGateway [XLX Network] の TG に合わせる（例: 6）
+sudo tg_change -w 6
+
+# 復帰先を TGIF の切断にする
+sudo tg_change -r 4000
+
+# 現在 TGIF 側でつながっている TG を切断する（スロット2の例）
+sudo tg_change -4000:2
+```
+
+### 10.3 確認
+
+```bash
+tg_change --status
+journalctl -u tgifchanger-py -n 20 --no-pager
+```
+
+- `--status` の `mode` が `xlx_base`、`xlx` が接続先のリフレクターとモジュール（例: `XLX950 A`）になっていること。
+- 起動ログに `MODE=XLX基準接続` と表示されること。`⚠️ [設定]` で始まる行が出ている場合は、その内容に従って DMRGateway か `tgifchanger.conf` を直してください。
+

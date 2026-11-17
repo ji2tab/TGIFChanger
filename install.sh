@@ -3,9 +3,16 @@
 # TGIFChanger-Py - Smart Installer & Migrator
 #
 # File:        install.sh
-# Version:     v2.3.4
+# Version:     v2.3.5
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
+#
+# Changes from v2.3.4:
+#   - [NEW] XLX 基準接続に対応。DMRGateway の [XLX Network] が有効 (Enabled=1) なら、
+#           推奨値を 監視TG=[XLX Network] の TG、復帰TG=4000 (TGIF の切断) にする。
+#   - [FIX] TGRewrite の自動抽出で、TG4000 へ書き換える規則 (TG の遮断用) を
+#           ホーム TG の規則として拾わないようにした。
+#   - 生成する設定ファイルテンプレートに XLX 基準接続の説明を追加。
 #
 # Changes from v2.3.1:
 #   - [NEW] 対話型セットアップに「コールサイン監視時間 (CALLSIGN_TIMEOUT)」を追加。
@@ -17,7 +24,7 @@
 
 set -euo pipefail
 
-VERSION="v2.3.4"
+VERSION="v2.3.5"
 INSTALL_DIR="/opt/tgifchanger-py"
 CONF_FILE="/etc/tgifchanger.conf"
 SERVICE="tgifchanger-py"
@@ -118,7 +125,9 @@ in_dmr && /Address=tgif\.network/ { is_tgif=1 }
 in_dmr && /^TGRewrite[0-9]*=/ {
     if (rewrite == "") {
         split($0, a, "=")
-        rewrite = a[2]
+        split(a[2], f, ",")
+        # TG4000 への書き換えは TG の遮断用なので、ホーム TG の規則として扱わない
+        if (f[4] + 0 != 4000) rewrite = a[2]
     }
 }
 END { if (in_dmr && is_tgif && rewrite != "") print rewrite }
@@ -141,6 +150,22 @@ fi
 [ -z "$DETECTED_WATCH" ] && DETECTED_WATCH="1"
 [ -z "$DETECTED_RESTORE" ] && DETECTED_RESTORE="4000"
 
+# [v2.3.5] XLX 基準接続の判定
+#   DMRGateway の [XLX Network] が有効なら、待機は XLX、TGIF は必要なときだけ接続する構成とみなし、
+#   監視TG = [XLX Network] の TG、復帰TG = 4000 (TGIF の切断) を推奨値にする。
+XLX_BASE=0
+if [ -f "/etc/dmrgateway" ]; then
+    XLX_AWK='/^\[XLX Network\]/ { f=1; next } /^\[/ { f=0 } f && $0 ~ "^" key "=" { sub("^" key "=", ""); print; exit }'
+    XLX_ENABLED=$(awk -v key="Enabled" "$XLX_AWK" /etc/dmrgateway 2>/dev/null | tr -dc '0-9' || true)
+    XLX_TG=$(awk -v key="TG" "$XLX_AWK" /etc/dmrgateway 2>/dev/null | tr -dc '0-9' || true)
+    if [ "${XLX_ENABLED}" = "1" ] && [ -n "${XLX_TG}" ]; then
+        XLX_BASE=1
+        DETECTED_WATCH="${XLX_TG}"
+        DETECTED_RESTORE="4000"
+        echo "🔎 [XLX Network] が有効です。XLX 基準接続として推奨値を設定します (監視TG=${XLX_TG} / 復帰TG=4000)。"
+    fi
+fi
+
 # ------------------------------------------------------------------
 # 5. 設定ファイル (対話型テンプレート生成)
 # ------------------------------------------------------------------
@@ -148,7 +173,7 @@ if [[ -f "${CONF_FILE}" ]]; then
     echo "📝 既存 ${CONF_FILE} を保持します。"
     echo "   新オプションの確認用テンプレートを ${CONF_FILE}.new に保存:"
     cat > "${CONF_FILE}.new" <<EOF
-# TGIFChanger 設定ファイル (v2.3.4)
+# TGIFChanger 設定ファイル (v2.3.5)
 #
 # Bash KEY=VALUE 形式。両方の環境で読み込み可能:
 #   sudo bash install.sh     (インストール)
@@ -163,6 +188,9 @@ if [[ -f "${CONF_FILE}" ]]; then
 LOG_DIR="/var/log/pi-star"
 WATCH_SLOT="2"
 RESTORE_SLOT="2"
+# XLX 基準接続 (待機は XLX、TGIF は必要なときだけ接続) の場合:
+#   WATCH_TG   = DMRGateway [XLX Network] の TG と同じ値
+#   RESTORE_TG = 4000 (TGIF を切断して XLX の待機に戻る)
 WATCH_TG="${DETECTED_WATCH}"
 RESTORE_TG="${DETECTED_RESTORE}"
 RESTORE_DELAY="120"
@@ -211,7 +239,7 @@ else
     fi
 
     cat > "${CONF_FILE}" <<EOF
-# TGIFChanger 設定ファイル (v2.3.4)
+# TGIFChanger 設定ファイル (v2.3.5)
 #
 # Bash KEY=VALUE 形式。両方の環境で読み込み可能:
 #   sudo bash install.sh     (インストール)
@@ -226,6 +254,9 @@ else
 LOG_DIR="/var/log/pi-star"
 WATCH_SLOT="2"
 RESTORE_SLOT="2"
+# XLX 基準接続 (待機は XLX、TGIF は必要なときだけ接続) の場合:
+#   WATCH_TG   = DMRGateway [XLX Network] の TG と同じ値
+#   RESTORE_TG = 4000 (TGIF を切断して XLX の待機に戻る)
 WATCH_TG="${WATCH_TG}"
 RESTORE_TG="${RESTORE_TG}"
 RESTORE_DELAY="${RESTORE_DELAY}"

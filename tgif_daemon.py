@@ -4,9 +4,23 @@
 # TGIFChanger-Py - Unified MMDVM Daemon
 #
 # File:        tgif_daemon.py
-# Version:     v2.3.4
+# Version:     v2.3.5
 # Author:      Kazuhiko Shinoda (JI2TAB)
 # License:     GPL v3
+#
+# Changes from v2.3.4:
+#   - [NEW] XLX 基準接続モードに対応。
+#           DMRGateway の [XLX Network] が有効 (Enabled=1) で、RESTORE_TG が 4000 のとき、
+#           「待機は XLX、TGIF は必要なときだけ接続し RESTORE_DELAY 秒後に切断」として動作する。
+#           デーモンの動作 (ログ監視・復帰タイマー・API) は従来と同じで、
+#           復帰先が「TGIF のホーム TG」から「TGIF の切断 (TG4000)」に変わるだけ。
+#   - [NEW] WATCH_TG / RESTORE_TG が未設定のときの既定値を XLX 対応にした。
+#           [XLX Network] が有効なら WATCH_TG=[XLX Network] の TG、RESTORE_TG=4000。
+#   - [FIX] TGRewrite からの自動抽出で、TG4000 へ書き換える規則 (TG の遮断用) を
+#           ホーム TG の規則として拾わないようにした。
+#   - [NEW] 起動時とリロード時に動作モードを表示し、XLX 基準接続の設定不整合
+#           (待機 TG の不一致、待機 TG を TGIF へ書き換える規則の残存など) を警告する。
+#   - [NEW] status に mode / xlx を追加。
 #
 # Changes from v2.3.3:
 #   - [NEW] コールサイン・ウォッチドッグ (真の利用者監視) を追加。
@@ -21,7 +35,7 @@ import os, sys, re, time, glob, fcntl, errno, signal, socket, threading
 import urllib.request, urllib.error, subprocess, shutil
 from pathlib import Path
 
-VERSION        = "v2.3.4"
+VERSION        = "v2.3.5"
 CONF_FILE      = "/etc/tgifchanger.conf"
 MMDVM_CONF     = "/etc/mmdvmhost"
 DMRGW_CONF     = "/etc/dmrgateway"
@@ -126,11 +140,88 @@ def get_my_callsign() -> str:
                 return kv[1].upper()
     return ""
 
+def get_xlx_base() -> dict:
+    """[v2.3.5] DMRGateway の [XLX Network] を読む。
+    戻り値: {"enabled": bool, "startup": str, "module": str, "tg": str, "slot": str}"""
+    info = {"enabled": False, "startup": "", "module": "", "tg": "", "slot": ""}
+    for section, lines in _iter_sections(DMRGW_CONF):
+        if section != "XLX Network":
+            continue
+        for line in lines:
+            kv = _kv(line)
+            if not kv:
+                continue
+            k, v = kv
+            if k == "Enabled":
+                info["enabled"] = (v == "1")
+            elif k == "Startup":
+                info["startup"] = v
+            elif k == "Module":
+                info["module"] = v
+            elif k == "TG":
+                info["tg"] = re.sub(r"\D", "", v)
+            elif k == "Slot":
+                info["slot"] = re.sub(r"\D", "", v)
+        break
+    return info
+
+def xlx_label(xlx: dict) -> str:
+    """[v2.3.5] 表示用のリフレクター名 (例: "XLX833 X")。"""
+    name = "XLX" + xlx["startup"] if xlx.get("startup") else "XLX"
+    return (name + " " + xlx["module"]).strip() if xlx.get("module") else name
+
+def _tgif_rewrites():
+    """[v2.3.5] TGIF 接続の TGRewrite 規則を (fromSlot, fromTG, toSlot, toTG) の文字列で列挙する。"""
+    out = []
+    for conf_path in [DMRGW_CONF, MMDVM_CONF]:
+        for section, lines in _iter_sections(conf_path):
+            if not section.startswith("DMR Network"):
+                continue
+            is_tgif, rules = False, []
+            for line in lines:
+                kv = _kv(line)
+                if not kv:
+                    continue
+                k, v = kv
+                if k == "Address" and "tgif.network" in v:
+                    is_tgif = True
+                elif k.startswith("TGRewrite"):
+                    parts = [re.sub(r"\D", "", x) for x in v.split(",")]
+                    if len(parts) >= 4:
+                        rules.append(tuple(parts[:4]))
+            if is_tgif:
+                out.extend(rules)
+    return out
+
+def check_xlx_consistency(xlx: dict, watch_tg: str, restore_tg: str) -> list:
+    """[v2.3.5] XLX 基準接続のときの設定不整合を、警告文のリストで返す (問題なければ空)。"""
+    warns = []
+    if not xlx.get("enabled"):
+        return warns
+    if xlx.get("tg") and watch_tg != xlx["tg"]:
+        warns.append(f"WATCH_TG ({watch_tg}) が [XLX Network] の TG ({xlx['tg']}) と一致しません。"
+                     f"待機 TG の通話を待機中として扱えません。")
+    if restore_tg != "4000":
+        warns.append(f"[XLX Network] が有効ですが RESTORE_TG が {restore_tg} です。"
+                     f"TGIF の TG{restore_tg} に常時接続し続けます。XLX とブリッジされた TG の場合は二重配信になります。"
+                     f"XLX 基準接続にするには RESTORE_TG=4000 を指定してください。")
+    for _fs, ftg, _ts, ttg in _tgif_rewrites():
+        if xlx.get("tg") and ftg == xlx["tg"] and ttg != "4000":
+            warns.append(f"TGIF 接続に、待機 TG ({ftg}) を TG{ttg} へ書き換える TGRewrite が残っています。"
+                         f"待機 TG は XLX へ送られるため送信には使われませんが、"
+                         f"TGIF の TG{ttg} の音声が待機 TG として RF に出て、XLX 経由の音声と二重になる恐れがあります。")
+            break
+    return warns
+
 def get_dynamic_tgs():
     w = config.get("WATCH_TG", "").strip()
     r = config.get("RESTORE_TG", "").strip()
     if w and r:
         return w, r
+    # [v2.3.5] XLX 基準接続: 待機 TG は [XLX Network] の TG、復帰先は TGIF の切断 (4000)
+    xlx = get_xlx_base()
+    if xlx["enabled"] and xlx["tg"]:
+        return (w or xlx["tg"]), (r or "4000")
     for conf_path in [DMRGW_CONF, MMDVM_CONF]:
         for section, lines in _iter_sections(conf_path):
             if not section.startswith("DMR Network"):
@@ -145,6 +236,10 @@ def get_dynamic_tgs():
                 if k == "Address" and "tgif.network" in v:
                     is_tgif = True
                 elif k.startswith("TGRewrite") and rewrite is None:
+                    # [v2.3.5] TG4000 への書き換えは TG の遮断用なので、ホーム TG の規則として扱わない
+                    _p = v.split(",")
+                    if len(_p) > 3 and re.sub(r"\D", "", _p[3]) == "4000":
+                        continue
                     rewrite = v
             if is_tgif and rewrite:
                 parts = rewrite.split(",")
@@ -338,14 +433,17 @@ class CmdServer:
             return "OK stop"
         if cmd == "reload":
             load_config()
-            app.watch_tg, app.restore_tg = get_dynamic_tgs()
+            app.refresh_tgs()
             log("🔄 設定リロード完了")
             log(f"   HOME=TG{app.restore_tg}  WATCH=TG{app.watch_tg}  DELAY={config['RESTORE_DELAY']}s  CS_TIMEOUT={config.get('CALLSIGN_TIMEOUT','300')}s")
+            app.log_mode()
             return "OK reload"
         if cmd == "status":
             import json
             d = {
                 "version":    VERSION,
+                "mode":       "xlx_base" if app.xlx_base else "tgif_direct",
+                "xlx":        xlx_label(app.xlx) if app.xlx.get("enabled") else None,
                 "watch_tg":   app.watch_tg,
                 "restore_tg": app.restore_tg,
                 "delay":      config.get("RESTORE_DELAY", "120"),
@@ -371,7 +469,9 @@ class App:
         self._timer_lock = threading.Lock()
         self.dmr_id     = get_dmr_id()
         self.my_call    = get_my_callsign()
-        self.watch_tg, self.restore_tg = get_dynamic_tgs()
+        self.xlx: dict = {}
+        self.xlx_base   = False
+        self.refresh_tgs()
         self._stop      = threading.Event()
         self._cmd_server = CmdServer(self)
 
@@ -383,6 +483,23 @@ class App:
         log(f"🚀 TGIFChanger-Py {VERSION} Active")
         log(f"   HOME=TG{self.restore_tg}/Slot{config['RESTORE_SLOT']}  DELAY={config.get('RESTORE_DELAY', '120')}s  CS_TIMEOUT={config.get('CALLSIGN_TIMEOUT','300')}s")
         log(f"   WATCH=TG{self.watch_tg}  DMR ID={self.dmr_id or '(unknown)'}")
+        self.log_mode()
+
+    # --- [v2.3.5] 監視TG・復帰TG・動作モードの再計算 ---
+    def refresh_tgs(self) -> None:
+        self.watch_tg, self.restore_tg = get_dynamic_tgs()
+        self.xlx = get_xlx_base()
+        # XLX 基準接続: XLX が有効で、復帰先が TGIF の切断 (TG4000)
+        self.xlx_base = bool(self.xlx.get("enabled")) and self.restore_tg == "4000"
+
+    def log_mode(self) -> None:
+        if self.xlx_base:
+            log(f"   MODE=XLX基準接続  待機={xlx_label(self.xlx)} (TG{self.watch_tg})  "
+                f"TGIF は他TG利用後 {config.get('RESTORE_DELAY', '120')}s で切断 (TG4000)")
+        else:
+            log(f"   MODE=TGIF直結  ホームTG{self.restore_tg}")
+        for w in check_xlx_consistency(self.xlx, self.watch_tg, self.restore_tg):
+            log(f"⚠️ [設定] {w}")
 
     # --- [v2.3.4] 離脱状態・ウォッチドッグのクリア ---
     def _clear_away(self) -> None:
@@ -411,7 +528,10 @@ class App:
     def _do_restore(self) -> None:
         with self._timer_lock:
             self.timer = None
-        log(f"🔄 TG {self.restore_tg} に自動復帰中...")
+        if self.xlx_base:
+            log(f"🔄 TGIF を切断中 (TG{self.restore_tg})... → {xlx_label(self.xlx)} の待機へ復帰")
+        else:
+            log(f"🔄 TG {self.restore_tg} に自動復帰中...")
         slot_idx = int(config.get("RESTORE_SLOT", "2")) - 1
         url = (f"{config['TGIF_API'].rstrip('/')}/{self.dmr_id}/{slot_idx}/{self.restore_tg}")
         try:
@@ -575,8 +695,9 @@ class App:
         def stop(sig, frame): self._stop.set()
         def reload_(sig, frame):
             load_config()
-            self.watch_tg, self.restore_tg = get_dynamic_tgs()
+            self.refresh_tgs()
             log("🔄 SIGHUP: 設定リロード完了")
+            self.log_mode()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try: signal.signal(sig, stop)
             except (ValueError, OSError): pass

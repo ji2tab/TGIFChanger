@@ -1,6 +1,6 @@
 # TGIFChanger-Py (for OpenCCVoice & WPSD/Pi-Star)
 
-**Version v2.3.4 (Python 3 Unified Daemon & Smart Installer Edition)**
+**Version v2.3.5 (Python 3 Unified Daemon & Smart Installer Edition)**
 
 TGIFChanger-Py は、MMDVM（Pi-Star / WPSD）環境においてTGIFネットワークの運用を自動化・高度化するためのツールセットです。
 Arduinoベースの音声ガイダンスシステム「OpenCCVoice」との物理連携（GPIO制御）を前提に設計されています。
@@ -21,7 +21,7 @@ Arduinoベースの音声ガイダンスシステム「OpenCCVoice」との物�
 
 ---
 
-## 🚀 v2.3.4 の進化ポイント (旧シェルスクリプト版からの改善)
+## 🚀 v2.3.5 の進化ポイント (旧シェルスクリプト版からの改善)
 
 ### 1. Python 3 統合デーモンによる圧倒的な低負荷
 
@@ -48,6 +48,14 @@ Arduinoベースの音声ガイダンスシステム「OpenCCVoice」との物�
 - その局の RF が `CALLSIGN_TIMEOUT` 秒（デフォルト 300秒）確認できなければ、**ネット側（リモート）の通話が続いていても** `RESTORE_TG` へ強制復帰します。network 受信（リモート通話）はカウント対象外です。
 - 別の局が RF キーアップすると、追跡対象をその局へ自動で切り替えます。
 - `CALLSIGN_TIMEOUT="0"` を指定すると本機能は無効化され、従来どおり `RESTORE_DELAY` のみで動作します。
+
+### 6. XLX 基準接続モード ［v2.3.5 新機能］
+
+- 待機先を TGIF のホームTG ではなく **XLX リフレクターのモジュール**に置き、TGIF は必要なときだけつなぐ運用に対応しました。
+- 待機TGで送受信している間は XLX とやりとりし、**別のTGで送信すると TGIF のそのTGへ直結**します。通話が終わって `RESTORE_DELAY` 秒たつと、TGIF を切断（TG4000）して XLX だけの待機に戻ります。
+- デーモンの動作（ログ監視・復帰タイマー・API）は従来と同じで、設定は `RESTORE_TG="4000"` と、`WATCH_TG` を DMRGateway の `[XLX Network]` の `TG` に合わせるだけです。DMRGateway 側の設定とあわせて **[XLX_Base_Mode.md](XLX_Base_Mode.md)** にまとめています。
+- 起動時に動作モード（`MODE=XLX基準接続` / `MODE=TGIF直結`）をログに表示し、設定の食い違い（待機TGの不一致、待機TGを TGIF へ書き換える規則の残存など）を警告します。
+- 従来の TGIF 直結の使い方は、そのまま変わりません。
 
 ---
 
@@ -141,6 +149,8 @@ tg_change -c
 ## 設定ファイル
 
 設定は `/etc/tgifchanger.conf` に集約されています。
+
+XLX を待機先にする「XLX 基準接続」で使う場合の設定は、[XLX_Base_Mode.md](XLX_Base_Mode.md) を参照してください。
 
 ※CLIツール (`sudo tg_change -w` 等) を使わずに、`nano` コマンド等で手動編集した場合は、デーモンに設定を読み込ませるために以下のコマンドでサービスを再起動してください。
 
